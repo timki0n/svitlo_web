@@ -1,0 +1,344 @@
+import os
+import asyncio
+import logging
+import time
+import contextlib
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from aiogram import Bot, Dispatcher, Router, types
+from aiogram.types import Message
+from aiogram.filters import Command, CommandObject
+
+from dotenv import load_dotenv
+from udp_listener import UDPListener
+from yasno_outages import YasnoOutages
+
+
+
+# ───────────────── env / config ─────────────────
+load_dotenv()  # підтягуємо .env із поточної директорії
+
+YASNO_GROUP = os.getenv("YASNO_GROUP", "6.2")
+
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+ALERT_CHAT_ID = os.getenv("ALERT_CHAT_ID")  # опц.: якщо не задано — бот запам'ятає чат із /start
+UDP_PORT = int(os.getenv("UDP_PORT", "5005"))
+DEFAULT_THRESHOLD_SEC = float(os.getenv("THRESHOLD_SEC", "6"))
+SCHEDULE_POLL_INTERVAL_SEC = 120
+
+TZ = ZoneInfo("Europe/Kyiv")
+
+# ───────────────── глобальний стан ─────────────────
+router = Router()
+listener = UDPListener(port=UDP_PORT)
+yasno = YasnoOutages(region_id=25, dso_id=902, group_id=YASNO_GROUP)
+
+threshold_sec = DEFAULT_THRESHOLD_SEC
+power_is_down = False
+power_down_since_ts = 0.0
+target_chat_id: int | None = int(ALERT_CHAT_ID) if ALERT_CHAT_ID else None
+last_today_signature: tuple | None = None
+last_tomorrow_status: str | None = None
+
+# ───────────────── helpers ─────────────────
+def fmt_dt(ts: float) -> str:
+    try:
+        return datetime.fromtimestamp(ts, tz=TZ).strftime("%Y-%m-%d %H:%M:%S")
+    except (OverflowError, OSError, ValueError):
+        return "невідомо"
+
+def fmt_duration(seconds: float) -> str:
+    try:
+        seconds = int(seconds)
+        h = seconds // 3600
+        m = (seconds % 3600) // 60
+        s = seconds % 60
+        parts = []
+        if h: parts.append(f"{h}h")
+        if m: parts.append(f"{m}m")
+        parts.append(f"{s}s")
+        return " ".join(parts)
+    except (OverflowError, ValueError):
+        return "невідомо"
+
+def build_today_message(outages_info: dict) -> str:
+    date_value = outages_info.get("date")
+    date_str = date_value.strftime("%d.%m.%Y") if hasattr(date_value, "strftime") else str(date_value)
+    status = outages_info.get("status", "")
+    outages = outages_info.get("outages", [])
+
+    if status != "ScheduleApplies":
+        if status == "WaitingForSchedule":
+            return (
+                f"📅 Розклад на {date_str}\n"
+                f"⌛ Очікуємо оновлення"
+            )
+        return (
+            f"📅 Розклад на {date_str}\n"
+            f"⚠️ Статус: {status}"
+        )
+
+    if not outages:
+        return (
+            f"📅 Розклад на {date_str}\n"
+            f"✅ Відключень не передбачено"
+        )
+
+    lines = [f"📅 Розклад на {date_str}", ""]
+    for idx, outage in enumerate(outages, 1):
+        start_str = outage["start"].strftime("%H:%M")
+        end_str = outage["end"].strftime("%H:%M")
+        type_label = "Планове" if outage["type"] == "Definite" else outage["type"]
+        lines.append(f"{idx}. {start_str} – {end_str} ({type_label})")
+
+    return "\n".join(lines)
+
+def build_today_signature(outages_info: dict) -> tuple:
+    date_value = outages_info.get("date")
+    date_iso = date_value.isoformat() if hasattr(date_value, "isoformat") else str(date_value)
+    status = outages_info.get("status")
+    raw_slots = outages_info.get("raw_slots") or []
+    slots_signature = tuple((slot.start_min, slot.end_min, slot.type) for slot in raw_slots)
+    return date_iso, status, slots_signature
+
+async def notify(bot: Bot, text: str):
+    if not target_chat_id:
+        return
+    try:
+        await bot.send_message(target_chat_id, text)
+    except Exception as e:
+        logging.error("send_message failed: %s", e)
+
+# ───────────────── Telegram handlers ─────────────────
+@router.message(Command("start"))
+async def cmd_start(m: Message):
+    global target_chat_id
+    target_chat_id = m.chat.id
+    await m.answer(
+        "👋 Бот моніторингу живлення ЖК 4U з графіками відключень YASNO.\n"
+        f"Група: {YASNO_GROUP}\n"
+    )
+
+@router.message(Command("status"))
+async def cmd_status(m: Message):
+    print("status chat_id: " + str(m.chat.id))
+    now = datetime.now(TZ)
+    def _fetch_schedule_messages(moment: datetime):
+        data = yasno.fetch()
+        outage_msg = yasno.get_nearest_outage_message(now=moment, data_override=data)
+        restore_msg = yasno.get_nearest_restore_message(now=moment, data_override=data)
+        return outage_msg, restore_msg
+
+    try:
+        outage_text, restore_text = await asyncio.to_thread(_fetch_schedule_messages, now)
+    except Exception as e:
+        logging.error("cmd_status schedule fetch error: %s", e)
+        outage_text = "⚠️ Не вдалося отримати графік"
+        restore_text = "⚠️ Не вдалося отримати графік"
+
+    secs = listener.seconds_since_last_packet()
+    power_down = secs > threshold_sec
+    state = "❌ світла немає" if power_down else "✅ світло є"
+    schedule_text = restore_text if power_down else outage_text
+
+    await m.answer(f"{state}\n{schedule_text}")
+
+@router.message(Command("today"))
+async def cmd_today(m: Message):
+    try:
+        outages_info = await asyncio.to_thread(yasno.get_today_outages)
+        message = build_today_message(outages_info)
+        await m.answer(message)
+    except Exception as e:
+        logging.error("cmd_today error: %s", e)
+        await m.answer("❌ Помилка при завантаженні графіку")
+
+@router.message(Command("tomorrow"))
+async def cmd_tomorrow(m: Message):
+    try:
+        outages_info = await asyncio.to_thread(yasno.get_tomorrow_outages)
+        date_str = outages_info["date"].strftime("%d.%m.%Y")
+        status = outages_info["status"]
+        outages = outages_info["outages"]
+        
+        if status != "ScheduleApplies":
+            if status == "WaitingForSchedule":
+                await m.answer(
+                    f"📅 Розклад на {date_str}\n"
+                    f"⌛ Очікуємо оновлення"
+                )
+            else:
+                await m.answer(
+                    f"📅 Розклад на {date_str}\n"
+                    f"⚠️ Статус: {status}"
+                )
+            return
+        
+        if not outages:
+            await m.answer(
+                f"📅 Розклад на {date_str}\n"
+                f"✅ Відключень не передбачено"
+            )
+            return
+        
+        message = f"📅 Розклад на {date_str}\n\n"
+        for idx, outage in enumerate(outages, 1):
+            start_str = outage["start"].strftime("%H:%M")
+            end_str = outage["end"].strftime("%H:%M")
+            type_label = "Планове" if outage["type"] == "Definite" else outage["type"]
+            message += f"{idx}. {start_str} – {end_str} ({type_label})\n"
+        
+        await m.answer(message)
+    except Exception as e:
+        logging.error("cmd_tomorrow error: %s", e)
+        await m.answer("❌ Помилка при завантаженні графіку")
+
+# ───────────────── background monitor ─────────────────
+async def schedule_monitor(bot: Bot):
+    global last_today_signature
+
+    while True:
+        try:
+            outages_info = await asyncio.to_thread(yasno.get_today_outages)
+            signature = build_today_signature(outages_info)
+
+            if last_today_signature is None:
+                last_today_signature = signature
+            elif signature != last_today_signature:
+                last_today_signature = signature
+                message_body = build_today_message(outages_info)
+                await notify(bot, f"Графік на сьогодні оновлено!\n\n{message_body}")
+
+            await asyncio.sleep(SCHEDULE_POLL_INTERVAL_SEC)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logging.exception("Schedule monitor error")
+            await asyncio.sleep(SCHEDULE_POLL_INTERVAL_SEC)
+
+async def schedule_monitor_tomorrow(bot: Bot):
+    global last_tomorrow_status
+
+    while True:
+        try:
+            outages_info = await asyncio.to_thread(yasno.get_tomorrow_outages)
+            current_status = outages_info.get("status", "")
+
+            if last_tomorrow_status is None:
+                last_tomorrow_status = current_status
+            elif last_tomorrow_status == "WaitingForSchedule" and current_status == "ScheduleApplies":
+                last_tomorrow_status = current_status
+                message_body = build_today_message(outages_info)
+                await notify(bot, f"З'явився графік на завтра!\n\n{message_body}")
+            else:
+                last_tomorrow_status = current_status
+
+            await asyncio.sleep(SCHEDULE_POLL_INTERVAL_SEC)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logging.exception("Schedule monitor tomorrow error")
+            await asyncio.sleep(SCHEDULE_POLL_INTERVAL_SEC)
+
+async def power_monitor(bot: Bot):
+    """
+    Періодично перевіряє відсутність/наявність UDP-пакетів і шле сповіщення.
+    """
+    global power_is_down, power_down_since_ts
+    await asyncio.sleep(1.0)  # трохи часу, щоб встигли зробити /start
+
+    while True:
+        try:
+            secs = listener.seconds_since_last_packet()
+            now = time.time()
+
+            if secs > threshold_sec:
+                if secs != float('inf'):  # Ігноруємо перший раз (без пакетів)
+                    if not power_is_down:
+                        power_is_down = True
+                        power_down_since_ts = now - secs  # орієнтовний старт простою
+                        try:
+                            now_dt = datetime.fromtimestamp(now, tz=TZ)
+                            restore_msg = await asyncio.to_thread(yasno.get_nearest_restore_message, now_dt)
+                            await notify(
+                                bot,
+                                f"⚠️ Світло ЗНИКЛО.\n{restore_msg}"
+                            )
+                        except Exception as e:
+                            logging.error("Failed to get restore message: %s", e)
+                            await notify(bot, "⚠️ Світло ЗНИКЛО.")
+            else:
+                if power_is_down:
+                    power_is_down = False
+                    downtime = now - power_down_since_ts
+                    await notify(
+                        bot,
+                        f"✅ Світло ВІДНОВЛЕНО.\n"
+                        f"Час без світла: {fmt_duration(downtime)}",
+                    )
+            await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logging.exception("Monitor error")
+            await asyncio.sleep(1.0)
+
+# ───────────────── lifecycle hooks (aiogram v3) ─────────────────
+# У v3 хендлери startup/shutdown реєструються через dp.startup.register / dp.shutdown.register,
+# а аргументи (dispatcher, bot тощо) підставляються DI-системою.
+# Див. офіційну документацію Dispatcher/Long-polling/DI. :contentReference[oaicite:1]{index=1}
+async def on_startup(dispatcher: Dispatcher, bot: Bot):
+    # стартуємо UDP-лісенер
+    listener.start()
+
+    # простий лог кожного пакета (можна прибрати)
+    def _on_packet(msg, addr):
+        print(f"[UDP] From {addr}: {msg}")
+    listener.on_packet = _on_packet
+
+    # запускаємо фоновий монітор і кладемо task у workflow_data диспетчера
+    monitor_task = asyncio.create_task(power_monitor(bot))
+    dispatcher.workflow_data["monitor_task"] = monitor_task
+
+    schedule_task = asyncio.create_task(schedule_monitor(bot))
+    dispatcher.workflow_data["schedule_task"] = schedule_task
+
+    schedule_tomorrow_task = asyncio.create_task(schedule_monitor_tomorrow(bot))
+    dispatcher.workflow_data["schedule_tomorrow_task"] = schedule_tomorrow_task
+    print("[startup] UDP listener started, monitor and schedule tasks running")
+
+async def on_shutdown(dispatcher: Dispatcher, bot: Bot):
+    # акуратно гасимо фоновий таск монітора
+    for key in ("monitor_task", "schedule_task", "schedule_tomorrow_task"):
+        task = dispatcher.workflow_data.get(key)
+        if task:
+            task.cancel()
+            with contextlib.suppress(Exception):
+                await task
+    listener.stop()
+    print("[shutdown] Clean exit")
+
+# ───────────────── main ─────────────────
+async def main():
+    logging.basicConfig(level=logging.INFO)
+    if not BOT_TOKEN:
+        raise SystemExit("⚠️ Не знайдено BOT_TOKEN. Додай у .env або в код.")
+
+    bot = Bot(BOT_TOKEN)
+    dp = Dispatcher()
+    dp.include_router(router)
+
+    # Реєструємо lifecycle-хендлери (v3-стиль)
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
+
+    # Контекстне керування клієнтом бота
+    async with bot:
+        await dp.start_polling(bot, allowed_updates=None)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        print("Stopped")
