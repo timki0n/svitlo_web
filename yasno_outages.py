@@ -38,6 +38,12 @@ class YasnoOutages:
             f"{self.region_id}/dsos/{self.dso_id}/planned-outages"
         )
         self._session = requests.Session()
+        # Допуск раннього старту планового відключення
+        self.early_start_grace_minutes = 45
+        # Скільки часу після планового старту ще показувати повідомлення «мало відбутися»
+        self.missed_start_grace_minutes = 60
+        # Допустима затримка відновлення перед повідомленням «мало відновитися»
+        self.restore_delay_grace_minutes = 60
 
     # ---------- HTTP ----------
     def fetch(self) -> Dict[str, Any]:
@@ -101,7 +107,8 @@ class YasnoOutages:
         today_block = group.get("today", {})
         tomorrow_block = group.get("tomorrow", {})
 
-        candidates: List[dt.datetime] = []
+        candidates: List[tuple[dt.datetime, dt.datetime]] = []
+        past_outages: List[tuple[dt.datetime, dt.datetime]] = []
         schedule_available = False
 
         # Сьогодні
@@ -113,9 +120,10 @@ class YasnoOutages:
                     continue
                 start_dt, end_dt = slot.as_time_range(today_date, self.tz)
                 if end_dt <= now:
+                    past_outages.append((start_dt, end_dt))
                     continue
                 if start_dt <= now <= end_dt or start_dt > now:
-                    candidates.append(end_dt)
+                    candidates.append((start_dt, end_dt))
 
         # Завтра
         if not candidates and tomorrow_block.get("status") == "ScheduleApplies":
@@ -125,10 +133,12 @@ class YasnoOutages:
                 if not slot.is_outage:
                     continue
                 start_dt, end_dt = slot.as_time_range(tomorrow_date, self.tz)
-                if end_dt > now:
-                    candidates.append(end_dt)
+                if end_dt <= now:
+                    past_outages.append((start_dt, end_dt))
+                elif end_dt > now:
+                    candidates.append((start_dt, end_dt))
 
-        if not candidates:
+        if not candidates and not past_outages:
             if not schedule_available:
                 status_msgs = []
                 today_status = today_block.get("status")
@@ -142,8 +152,22 @@ class YasnoOutages:
                 return "Графік недоступний."
             return "Графік не знайдено."
 
-        nearest_end = min(candidates)
-        return f"За графіком світло має відновитися о {nearest_end.strftime('%H:%M')}."
+        # Якщо зараз в межах будь-якого запланованого інтервалу з допуском раннього старту — повертаємо час його завершення
+        grace = dt.timedelta(minutes=self.early_start_grace_minutes)
+        ongoing = [(s, e) for (s, e) in candidates if (s - grace) <= now <= e]
+        if ongoing:
+            nearest_end = min(ongoing, key=lambda t: t[1])[1]
+            return f"За графіком світло має відновитися о {nearest_end.strftime('%H:%M')}."
+
+        if past_outages:
+            latest_end = max(past_outages, key=lambda t: t[1])[1]
+            delay = now - latest_end
+            restore_grace = dt.timedelta(minutes=self.restore_delay_grace_minutes)
+            if delay <= restore_grace:
+                return f"За графіком світло мало відновитися о {latest_end.strftime('%H:%M')}."
+
+        # Інакше ми не в запланованому відключенні — це поза графіком/можливо аварійні
+        return "Відключення поза графіком/можливо аварійні."
 
     # ---------- 4) Найближче відключення ----------
     def get_nearest_outage(self, now: Optional[dt.datetime] = None,
@@ -207,23 +231,40 @@ class YasnoOutages:
         # Якщо обидва дні мають статус, не "ScheduleApplies" — розклад недоступний
         if today_status != "ScheduleApplies" and tomorrow_status != "ScheduleApplies":
             if today_status == "WaitingForSchedule" or tomorrow_status == "WaitingForSchedule":
-                return "⌛ Розклад ще не опубліковано"
-            return f"⚠️ Розклад недоступний (статус: {today_status})"
+                return "⌛ Графік ще не опубліковано"
+            return f"⚠️ Графік недоступний (статус: {today_status})"
         
-        # Якщо є доступний розклад — шукаємо найближче відключення
+        def _future_starts(day_block: Dict[str, Any], fallback_date: dt.date) -> List[dt.datetime]:
+            if day_block.get("status") != "ScheduleApplies":
+                return []
+            date_val = dt.datetime.fromisoformat(day_block.get("date")).date() if day_block.get("date") else fallback_date
+            starts: List[dt.datetime] = []
+            for slot in self._parse_slots(day_block):
+                if not slot.is_outage:
+                    continue
+                start_dt, _ = slot.as_time_range(date_val, self.tz)
+                if start_dt > now:
+                    starts.append(start_dt.astimezone(self.tz))
+            return starts
+
+        future_outages = sorted(
+            _future_starts(today_block, now.date()) +
+            _future_starts(tomorrow_block, now.date() + dt.timedelta(days=1))
+        )
+
         nearest_outage = self.get_nearest_outage(now=now, data_override=data_override)
-        
-        if nearest_outage is None:
+        if nearest_outage is not None:
+            nearest_outage = nearest_outage.astimezone(self.tz)
+            if now >= nearest_outage:
+                elapsed = now - nearest_outage
+                if elapsed <= dt.timedelta(minutes=self.missed_start_grace_minutes):
+                    return f"Відключення мало відбутися о {nearest_outage.strftime('%H:%M')}, очікуйте"
+
+        if not future_outages:
             return "💡 Сьогодні відключень не передбачено"
-        
-        nearest_outage = nearest_outage.astimezone(self.tz)
-        if now >= nearest_outage:
-            return f"Відключення мало відбутися о {nearest_outage.strftime('%H:%M')}, очікуйте"
-        else:
-            time_str = nearest_outage.strftime('%H:%M')
-            # Перевіряємо, чи це завтра
-            tomorrow_date = now.date() + dt.timedelta(days=1)
-            if nearest_outage.date() == tomorrow_date:
-                return f"Найближче відключення завтра о {time_str}"
-            else:
-                return f"Найближче відключення о {time_str}"
+
+        next_outage = future_outages[0]
+        time_str = next_outage.strftime('%H:%M')
+        if next_outage.date() == (now.date() + dt.timedelta(days=1)):
+            return f"Найближче відключення завтра о {time_str}"
+        return f"Найближче відключення о {time_str}"

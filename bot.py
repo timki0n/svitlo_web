@@ -1,10 +1,12 @@
 import os
+import re
 import asyncio
 import logging
 import time
 import contextlib
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from typing import Final
 
 from aiogram import Bot, Dispatcher, Router, types
 from aiogram.types import Message
@@ -22,7 +24,27 @@ load_dotenv()  # підтягуємо .env із поточної директо�
 YASNO_GROUP = os.getenv("YASNO_GROUP", "6.2")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-ALERT_CHAT_ID = os.getenv("ALERT_CHAT_ID")  # опц.: якщо не задано — бот запам'ятає чат із /start
+ADMIN_LOG_CHAT_ID = int(os.getenv("ADMIN_LOG_CHAT_ID", "396952666"))
+def _parse_chat_targets_env(raw: str | None) -> tuple[tuple[int, int | None], ...]:
+    if not raw:
+        return tuple()
+
+    targets: list[tuple[int, int | None]] = []
+    parts = [part for part in re.split(r"[,\s]+", raw.strip()) if part]
+    for part in parts:
+        if "_" in part:
+            chat_part, thread_part = part.rsplit("_", 1)
+            chat_id = int(chat_part)
+            thread_id = int(thread_part)
+            targets.append((chat_id, thread_id))
+        else:
+            chat_id = int(part)
+            targets.append((chat_id, None))
+
+    return tuple(targets)
+
+
+ALERT_CHAT_TARGETS: Final[tuple[tuple[int, int | None], ...]] = _parse_chat_targets_env(os.getenv("ALERT_CHAT_ID"))
 UDP_PORT = int(os.getenv("UDP_PORT", "5005"))
 DEFAULT_THRESHOLD_SEC = float(os.getenv("THRESHOLD_SEC", "6"))
 SCHEDULE_POLL_INTERVAL_SEC = 120
@@ -35,11 +57,13 @@ listener = UDPListener(port=UDP_PORT)
 yasno = YasnoOutages(region_id=25, dso_id=902, group_id=YASNO_GROUP)
 
 threshold_sec = DEFAULT_THRESHOLD_SEC
+startup_ts = 0.0
 power_is_down = False
 power_down_since_ts = 0.0
-target_chat_id: int | None = int(ALERT_CHAT_ID) if ALERT_CHAT_ID else None
 last_today_signature: tuple | None = None
 last_tomorrow_status: str | None = None
+last_today_date = None
+last_tomorrow_date = None
 
 # ───────────────── helpers ─────────────────
 def fmt_dt(ts: float) -> str:
@@ -102,19 +126,24 @@ def build_today_signature(outages_info: dict) -> tuple:
     slots_signature = tuple((slot.start_min, slot.end_min, slot.type) for slot in raw_slots)
     return date_iso, status, slots_signature
 
+import asyncio
+
 async def notify(bot: Bot, text: str):
-    if not target_chat_id:
+    if not ALERT_CHAT_TARGETS:
         return
-    try:
-        await bot.send_message(target_chat_id, text)
-    except Exception as e:
-        logging.error("send_message failed: %s", e)
+    for chat_id, thread_id in ALERT_CHAT_TARGETS:
+        try:
+            if thread_id is None:
+                await bot.send_message(chat_id, text)
+            else:
+                await bot.send_message(chat_id, text, message_thread_id=thread_id)
+            await asyncio.sleep(0.05)  # невеликий тротлінг між повідомленнями
+        except Exception as e:
+            logging.error("send_message failed (%s): %s", chat_id, e)
 
 # ───────────────── Telegram handlers ─────────────────
 @router.message(Command("start"))
 async def cmd_start(m: Message):
-    global target_chat_id
-    target_chat_id = m.chat.id
     await m.answer(
         "👋 Бот моніторингу живлення ЖК 4U з графіками відключень YASNO.\n"
         f"Група: {YASNO_GROUP}\n"
@@ -123,6 +152,25 @@ async def cmd_start(m: Message):
 @router.message(Command("status"))
 async def cmd_status(m: Message):
     print("status chat_id: " + str(m.chat.id))
+    thread_id = m.message_thread_id
+    username = None
+    if m.from_user:
+        if getattr(m.from_user, "username", None):
+            username = "@" + str(m.from_user.username)
+        else:
+            first = getattr(m.from_user, "first_name", "") or ""
+            last = getattr(m.from_user, "last_name", "") or ""
+            username = (first + " " + last).strip() or None
+    if ADMIN_LOG_CHAT_ID:
+        log_text = f"📮 status від chat={m.chat.id}"
+        if username:
+            log_text += f", login={username}"
+        if thread_id is not None:
+            log_text += f", thread={thread_id}"
+        try:
+            await m.bot.send_message(ADMIN_LOG_CHAT_ID, log_text, disable_notification=True)
+        except Exception as e:
+            logging.error("Failed to send status log: %s", e)
     now = datetime.now(TZ)
     def _fetch_schedule_messages(moment: datetime):
         data = yasno.fetch()
@@ -196,19 +244,29 @@ async def cmd_tomorrow(m: Message):
 
 # ───────────────── background monitor ─────────────────
 async def schedule_monitor(bot: Bot):
-    global last_today_signature
+    global last_today_signature, last_today_date
 
     while True:
         try:
             outages_info = await asyncio.to_thread(yasno.get_today_outages)
-            signature = build_today_signature(outages_info)
+            today_date = outages_info.get("date")
+            status = outages_info.get("status")
+            raw_slots = outages_info.get("raw_slots") or []
+            slots_signature = tuple((slot.start_min, slot.end_min, slot.type) for slot in raw_slots)
+            # НЕ порівнюємо дату, оскільки вона змінюється о 00:00
+            current_signature = (status, slots_signature)
 
-            if last_today_signature is None:
-                last_today_signature = signature
-            elif signature != last_today_signature:
-                last_today_signature = signature
+            # Якщо змінилася календарна дата — просто скидаємо базову точку без сповіщення
+            if last_today_date is None:
+                last_today_date = today_date
+                last_today_signature = current_signature
+            elif today_date != last_today_date:
+                last_today_date = today_date
+                last_today_signature = current_signature
+            elif current_signature != last_today_signature:
+                last_today_signature = current_signature
                 message_body = build_today_message(outages_info)
-                await notify(bot, f"Графік на сьогодні оновлено!\n\n{message_body}")
+                await notify(bot, f"🔔 Графік на сьогодні оновлено!\n\n{message_body}")
 
             await asyncio.sleep(SCHEDULE_POLL_INTERVAL_SEC)
         except asyncio.CancelledError:
@@ -218,21 +276,34 @@ async def schedule_monitor(bot: Bot):
             await asyncio.sleep(SCHEDULE_POLL_INTERVAL_SEC)
 
 async def schedule_monitor_tomorrow(bot: Bot):
-    global last_tomorrow_status
+    global last_tomorrow_status, last_tomorrow_date
 
     while True:
         try:
             outages_info = await asyncio.to_thread(yasno.get_tomorrow_outages)
+            tomorrow_date = outages_info.get("date")
             current_status = outages_info.get("status", "")
+            raw_slots = outages_info.get("raw_slots") or []
+            slots_signature = tuple((slot.start_min, slot.end_min, slot.type) for slot in raw_slots)
 
-            if last_tomorrow_status is None:
-                last_tomorrow_status = current_status
-            elif last_tomorrow_status == "WaitingForSchedule" and current_status == "ScheduleApplies":
-                last_tomorrow_status = current_status
-                message_body = build_today_message(outages_info)
-                await notify(bot, f"З'явився графік на завтра!\n\n{message_body}")
+            # Якщо змінилася дата "завтра" (перехід доби) — скидаємо стан без сповіщення
+            if last_tomorrow_date is None:
+                last_tomorrow_date = tomorrow_date
+                last_tomorrow_status = (current_status, slots_signature)
+            elif tomorrow_date != last_tomorrow_date:
+                last_tomorrow_date = tomorrow_date
+                last_tomorrow_status = (current_status, slots_signature)
             else:
-                last_tomorrow_status = current_status
+                # Порівнюємо статус і вміст слотів, ігноруючи дату
+                old_status, old_slots = last_tomorrow_status
+                if old_status == "WaitingForSchedule" and current_status == "ScheduleApplies":
+                    # Розклад став доступний
+                    last_tomorrow_status = (current_status, slots_signature)
+                    message_body = build_today_message(outages_info)
+                    await notify(bot, f"🔔 З'явився графік на завтра!\n\n{message_body}")
+                elif current_status != old_status or slots_signature != old_slots:
+                    # Щось інше змінилось (але не при переходу дня без змін)
+                    last_tomorrow_status = (current_status, slots_signature)
 
             await asyncio.sleep(SCHEDULE_POLL_INTERVAL_SEC)
         except asyncio.CancelledError:
@@ -253,28 +324,34 @@ async def power_monitor(bot: Bot):
             secs = listener.seconds_since_last_packet()
             now = time.time()
 
-            if secs > threshold_sec:
-                if secs != float('inf'):  # Ігноруємо перший раз (без пакетів)
-                    if not power_is_down:
-                        power_is_down = True
-                        power_down_since_ts = now - secs  # орієнтовний старт простою
-                        try:
-                            now_dt = datetime.fromtimestamp(now, tz=TZ)
-                            restore_msg = await asyncio.to_thread(yasno.get_nearest_restore_message, now_dt)
-                            await notify(
-                                bot,
-                                f"⚠️ Світло ЗНИКЛО.\n{restore_msg}"
-                            )
-                        except Exception as e:
-                            logging.error("Failed to get restore message: %s", e)
-                            await notify(bot, "⚠️ Світло ЗНИКЛО.")
+            # НІКОЛИ не було пакета з моменту запуску
+            if secs == float('inf'):
+                if not power_is_down and (now - startup_ts) > threshold_sec:
+                    # Вважаємо, що бот стартував під час відключення
+                    power_is_down = True
+                    power_down_since_ts = startup_ts
+                    # Без сповіщення при старті — відправимо сповіщення лише при відновленні
+            elif secs > threshold_sec:
+                if not power_is_down:
+                    power_is_down = True
+                    power_down_since_ts = now - secs  # орієнтовний старт простою
+                    try:
+                        now_dt = datetime.fromtimestamp(now, tz=TZ)
+                        restore_msg = await asyncio.to_thread(yasno.get_nearest_restore_message, now_dt)
+                        await notify(
+                            bot,
+                            f"🔔⚠️ Світло ЗНИКЛО.\n{restore_msg}"
+                        )
+                    except Exception as e:
+                        logging.error("Failed to get restore message: %s", e)
+                        await notify(bot, "⚠️ Світло ЗНИКЛО.")
             else:
                 if power_is_down:
                     power_is_down = False
                     downtime = now - power_down_since_ts
                     await notify(
                         bot,
-                        f"✅ Світло ВІДНОВЛЕНО.\n"
+                        f"🔔✅ Світло ВІДНОВЛЕНО.\n"
                         f"Час без світла: {fmt_duration(downtime)}",
                     )
             await asyncio.sleep(1.0)
@@ -289,6 +366,8 @@ async def power_monitor(bot: Bot):
 # а аргументи (dispatcher, bot тощо) підставляються DI-системою.
 # Див. офіційну документацію Dispatcher/Long-polling/DI. :contentReference[oaicite:1]{index=1}
 async def on_startup(dispatcher: Dispatcher, bot: Bot):
+    global startup_ts
+    startup_ts = time.time()
     # стартуємо UDP-лісенер
     listener.start()
 
