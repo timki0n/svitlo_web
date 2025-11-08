@@ -107,7 +107,7 @@ class YasnoOutages:
         today_block = group.get("today", {})
         tomorrow_block = group.get("tomorrow", {})
 
-        candidates: List[tuple[dt.datetime, dt.datetime]] = []
+        slots: List[tuple[dt.datetime, dt.datetime]] = []
         past_outages: List[tuple[dt.datetime, dt.datetime]] = []
         schedule_available = False
 
@@ -123,10 +123,10 @@ class YasnoOutages:
                     past_outages.append((start_dt, end_dt))
                     continue
                 if start_dt <= now <= end_dt or start_dt > now:
-                    candidates.append((start_dt, end_dt))
+                    slots.append((start_dt, end_dt))
 
         # Завтра
-        if not candidates and tomorrow_block.get("status") == "ScheduleApplies":
+        if tomorrow_block.get("status") == "ScheduleApplies":
             schedule_available = True
             tomorrow_date = dt.datetime.fromisoformat(tomorrow_block.get("date")).date() if tomorrow_block.get("date") else (now.date() + dt.timedelta(days=1))
             for slot in self._parse_slots(tomorrow_block):
@@ -136,9 +136,11 @@ class YasnoOutages:
                 if end_dt <= now:
                     past_outages.append((start_dt, end_dt))
                 elif end_dt > now:
-                    candidates.append((start_dt, end_dt))
+                    slots.append((start_dt, end_dt))
 
-        if not candidates and not past_outages:
+        slots.sort(key=lambda t: t[0])
+
+        if not slots and not past_outages:
             if not schedule_available:
                 status_msgs = []
                 today_status = today_block.get("status")
@@ -154,10 +156,15 @@ class YasnoOutages:
 
         # Якщо зараз в межах будь-якого запланованого інтервалу з допуском раннього старту — повертаємо час його завершення
         grace = dt.timedelta(minutes=self.early_start_grace_minutes)
-        ongoing = [(s, e) for (s, e) in candidates if (s - grace) <= now <= e]
-        if ongoing:
-            nearest_end = min(ongoing, key=lambda t: t[1])[1]
-            return f"За графіком світло має відновитися о {nearest_end.strftime('%H:%M')}."
+        ongoing_indices = [idx for idx, (s, e) in enumerate(slots) if (s - grace) <= now <= e]
+        if ongoing_indices:
+            first_idx = min(ongoing_indices, key=lambda idx: slots[idx][0])
+            extended_end = slots[first_idx][1]
+            next_idx = first_idx + 1
+            while next_idx < len(slots) and slots[next_idx][0] <= extended_end:
+                extended_end = max(extended_end, slots[next_idx][1])
+                next_idx += 1
+            return f"За графіком світло має відновитися о {extended_end.strftime('%H:%M')}."
 
         if past_outages:
             latest_end = max(past_outages, key=lambda t: t[1])[1]

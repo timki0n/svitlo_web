@@ -15,6 +15,7 @@ from aiogram.filters import Command, CommandObject
 from dotenv import load_dotenv
 from udp_listener import UDPListener
 from yasno_outages import YasnoOutages
+from storage import db
 
 
 
@@ -47,7 +48,7 @@ def _parse_chat_targets_env(raw: str | None) -> tuple[tuple[int, int | None], ..
 ALERT_CHAT_TARGETS: Final[tuple[tuple[int, int | None], ...]] = _parse_chat_targets_env(os.getenv("ALERT_CHAT_ID"))
 UDP_PORT = int(os.getenv("UDP_PORT", "5005"))
 DEFAULT_THRESHOLD_SEC = float(os.getenv("THRESHOLD_SEC", "6"))
-SCHEDULE_POLL_INTERVAL_SEC = 120
+SCHEDULE_POLL_INTERVAL_SEC = 60
 
 TZ = ZoneInfo("Europe/Kyiv")
 
@@ -58,8 +59,6 @@ yasno = YasnoOutages(region_id=25, dso_id=902, group_id=YASNO_GROUP)
 
 threshold_sec = DEFAULT_THRESHOLD_SEC
 startup_ts = 0.0
-power_is_down = False
-power_down_since_ts = 0.0
 last_today_signature: tuple | None = None
 last_tomorrow_status: str | None = None
 last_today_date = None
@@ -126,7 +125,6 @@ def build_today_signature(outages_info: dict) -> tuple:
     slots_signature = tuple((slot.start_min, slot.end_min, slot.type) for slot in raw_slots)
     return date_iso, status, slots_signature
 
-import asyncio
 
 async def notify(bot: Bot, text: str):
     if not ALERT_CHAT_TARGETS:
@@ -255,17 +253,26 @@ async def schedule_monitor(bot: Bot):
             slots_signature = tuple((slot.start_min, slot.end_min, slot.type) for slot in raw_slots)
             # НЕ порівнюємо дату, оскільки вона змінюється о 00:00
             current_signature = (status, slots_signature)
+            persist_required = False
+            message_body = None
 
             # Якщо змінилася календарна дата — просто скидаємо базову точку без сповіщення
             if last_today_date is None:
                 last_today_date = today_date
                 last_today_signature = current_signature
+                persist_required = True
             elif today_date != last_today_date:
                 last_today_date = today_date
                 last_today_signature = current_signature
+                persist_required = True
             elif current_signature != last_today_signature:
                 last_today_signature = current_signature
+                persist_required = True
                 message_body = build_today_message(outages_info)
+
+            if persist_required:
+                await db.upsert_schedule(today_date, status, outages_info.get("outages"), raw_slots)
+            if message_body:
                 await notify(bot, f"🔔 Графік на сьогодні оновлено!\n\n{message_body}")
 
             await asyncio.sleep(SCHEDULE_POLL_INTERVAL_SEC)
@@ -285,27 +292,37 @@ async def schedule_monitor_tomorrow(bot: Bot):
             current_status = outages_info.get("status", "")
             raw_slots = outages_info.get("raw_slots") or []
             slots_signature = tuple((slot.start_min, slot.end_min, slot.type) for slot in raw_slots)
+            persist_required = False
+            message_body = None
 
             # Якщо змінилася дата "завтра" (перехід доби) — скидаємо стан без сповіщення
             if last_tomorrow_date is None:
                 last_tomorrow_date = tomorrow_date
                 last_tomorrow_status = (current_status, slots_signature)
+                persist_required = True
             elif tomorrow_date != last_tomorrow_date:
                 last_tomorrow_date = tomorrow_date
                 last_tomorrow_status = (current_status, slots_signature)
+                persist_required = True
             else:
                 # Порівнюємо статус і вміст слотів, ігноруючи дату
                 old_status, old_slots = last_tomorrow_status
                 if old_status == "WaitingForSchedule" and current_status == "ScheduleApplies":
                     # Розклад став доступний
                     last_tomorrow_status = (current_status, slots_signature)
+                    persist_required = True
                     message_body = build_today_message(outages_info)
-                    await notify(bot, f"🔔 З'явився графік на завтра!\n\n{message_body}")
                 elif current_status != old_status or slots_signature != old_slots:
                     # Щось інше змінилось (але не при переходу дня без змін)
                     last_tomorrow_status = (current_status, slots_signature)
+                    persist_required = True
 
-            await asyncio.sleep(SCHEDULE_POLL_INTERVAL_SEC)
+            if persist_required:
+                await db.upsert_schedule(tomorrow_date, current_status, outages_info.get("outages"), raw_slots)
+            if message_body:
+                await notify(bot, f"🔔 З'явився графік на завтра!\n\n{message_body}")
+
+            await asyncio.sleep(SCHEDULE_POLL_INTERVAL_SEC + 1)
         except asyncio.CancelledError:
             break
         except Exception:
@@ -316,7 +333,6 @@ async def power_monitor(bot: Bot):
     """
     Періодично перевіряє відсутність/наявність UDP-пакетів і шле сповіщення.
     """
-    global power_is_down, power_down_since_ts
     await asyncio.sleep(1.0)  # трохи часу, щоб встигли зробити /start
 
     while True:
@@ -324,17 +340,23 @@ async def power_monitor(bot: Bot):
             secs = listener.seconds_since_last_packet()
             now = time.time()
 
-            # НІКОЛИ не було пакета з моменту запуску
-            if secs == float('inf'):
-                if not power_is_down and (now - startup_ts) > threshold_sec:
-                    # Вважаємо, що бот стартував під час відключення
-                    power_is_down = True
-                    power_down_since_ts = startup_ts
-                    # Без сповіщення при старті — відправимо сповіщення лише при відновленні
+            outage_detected = False
+            outage_start_candidate = None
+
+            if secs == float("inf"):
+                if (now - startup_ts) > threshold_sec:
+                    outage_detected = True
+                    outage_start_candidate = startup_ts
             elif secs > threshold_sec:
-                if not power_is_down:
-                    power_is_down = True
-                    power_down_since_ts = now - secs  # орієнтовний старт простою
+                outage_detected = True
+                outage_start_candidate = now - secs
+
+            active_outage = await db.get_active_outage()
+
+            if outage_detected:
+                if active_outage is None:
+                    start_ts = outage_start_candidate if outage_start_candidate is not None else now
+                    await db.log_outage_start(start_ts)
                     try:
                         now_dt = datetime.fromtimestamp(now, tz=TZ)
                         restore_msg = await asyncio.to_thread(yasno.get_nearest_restore_message, now_dt)
@@ -346,9 +368,10 @@ async def power_monitor(bot: Bot):
                         logging.error("Failed to get restore message: %s", e)
                         await notify(bot, "⚠️ Світло ЗНИКЛО.")
             else:
-                if power_is_down:
-                    power_is_down = False
-                    downtime = now - power_down_since_ts
+                if active_outage is not None and secs != float("inf"):
+                    start_ts = await db.log_outage_end(now)
+                    effective_start = start_ts if start_ts is not None else now
+                    downtime = max(0.0, now - effective_start)
                     await notify(
                         bot,
                         f"🔔✅ Світло ВІДНОВЛЕНО.\n"
@@ -396,6 +419,7 @@ async def on_shutdown(dispatcher: Dispatcher, bot: Bot):
             with contextlib.suppress(Exception):
                 await task
     listener.stop()
+    db.close()
     print("[shutdown] Clean exit")
 
 # ───────────────── main ─────────────────

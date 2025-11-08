@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 1600" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="gloom" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0%" stop-color="#2d1a10"/>
+      <stop offset="45%" stop-color="#1b120f"/>
+      <stop offset="100%" stop-color="#080707"/>
+    </linearGradient>
+    <radialGradient id="amber" cx="50%" cy="25%" r="55%">
+      <stop offset="0%" stop-color="#f5c06b" stop-opacity="0.65"/>
+      <stop offset="45%" stop-color="#d37d2f" stop-opacity="0.28"/>
+      <stop offset="100%" stop-color="#0f0906" stop-opacity="0.05"/>
+    </radialGradient>
+  </defs>
+  <rect width="900" height="1600" fill="url(#gloom)"/>
+  <circle cx="450" cy="420" r="400" fill="url(#amber)"/>
+  <rect x="230" y="380" width="440" height="880" rx="110" ry="110" fill="rgba(56, 30, 14, 0.45)"/>
+  <rect x="260" y="420" width="380" height="820" rx="100" ry="100" fill="rgba(80, 42, 18, 0.32)"/>
+  <rect x="320" y="520" width="260" height="620" rx="80" ry="80" fill="rgba(124, 68, 26, 0.25)"/>
+  <path d="M380 620h160v360c0 55-45 100-100 100s-60-45-60-100z" fill="rgba(255, 153, 0, 0.12)"/>
+  <ellipse cx="450" cy="1200" rx="250" ry="55" fill="rgba(0, 0, 0, 0.45)"/>
+</svg>
+
