@@ -19,7 +19,7 @@ const db = new Database(databasePath, {
 });
 
 export function getSchedules(): ScheduleRow[] {
-  const statement = db.prepare<ScheduleRow>(
+  const statement = db.prepare<any[], ScheduleRow>(
     "SELECT schedule_date, outages_json FROM schedules ORDER BY schedule_date"
   );
 
@@ -27,7 +27,7 @@ export function getSchedules(): ScheduleRow[] {
 }
 
 export function getActualOutages(): ActualOutageRow[] {
-  const statement = db.prepare<ActualOutageRow>(
+  const statement = db.prepare<any[], ActualOutageRow>(
     "SELECT start_ts, end_ts FROM outages ORDER BY start_ts"
   );
 
