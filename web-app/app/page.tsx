@@ -72,7 +72,7 @@ function resolveCurrentStatus(actualRows: ActualOutageRow[]): PowerStatus {
 
   return {
     tone: "ok",
-    icon: "😊",
+    icon: "💡",
     title: "Світло є",
     subtitle,
     sinceISO: sinceDate ? sinceDate.toISOString() : null,

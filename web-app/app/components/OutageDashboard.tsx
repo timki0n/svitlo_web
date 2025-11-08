@@ -461,12 +461,12 @@ function resolveGaugeState(weeks: WeekForChart[], status: PowerStatus, now: Date
 
   return {
     variant: "uptime",
-    topLabel: "До наступного відключення",
+    topLabel: "До відключення",
     primaryLabel:
-      remainingMinutes > 0 ? `~${formatDuration(remainingMinutes)}` : "Розпочинається просто зараз",
+      remainingMinutes > 0 ? `~${formatDuration(remainingMinutes)}` : "ще трошки",
     secondaryLabel:
       completedMinutes > 0 ? `Світло є вже ${formatDuration(completedMinutes)}` : undefined,
-    footnote: `Початок о ${formatShortDateTime(nextPlan.start, now)}`,
+    footnote: ``,
     completedMinutes,
     remainingMinutes,
     totalMinutes,
