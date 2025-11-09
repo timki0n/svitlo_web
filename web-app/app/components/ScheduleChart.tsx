@@ -196,12 +196,36 @@ function createOptionsForDay(
   baseOptions: ChartOptions<"bar">,
   day: DayForChart
 ): ChartOptions<"bar"> {
+  // Обчислюємо поточну годину на клієнті лише для сьогоднішнього дня
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+
+  const dayDate = (() => {
+    if (day.dateISO) {
+      const parsed = new Date(day.dateISO);
+      if (!Number.isNaN(parsed.getTime())) {
+        parsed.setHours(0, 0, 0, 0);
+        return parsed;
+      }
+    }
+    const fallback = new Date(day.key);
+    if (!Number.isNaN(fallback.getTime())) {
+      fallback.setHours(0, 0, 0, 0);
+      return fallback;
+    }
+    return null;
+  })();
+
+  const isToday = dayDate ? dayDate.getTime() === todayStart.getTime() : false;
+  const now = new Date();
+  const clientHour = isToday ? now.getHours() + now.getMinutes() / 60 : null;
+
   return {
     ...baseOptions,
     plugins: {
       ...baseOptions.plugins,
       currentTimeLine: {
-        hour: day.nowHour ?? null,
+        hour: clientHour,
       },
     },
   };

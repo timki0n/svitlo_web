@@ -1,4 +1,7 @@
+import type { Metadata } from "next";
+
 import { OutageDashboard, type PowerStatus } from "@/app/components/OutageDashboard";
+import AutoRefresh from "@/app/components/AutoRefresh";
 import type { DayForChart, WeekForChart } from "@/app/components/scheduleTypes";
 import {
   getActualOutages,
@@ -6,6 +9,8 @@ import {
   type ActualOutageRow,
   type ScheduleRow,
 } from "@/lib/db";
+
+export const dynamic = "force-dynamic";
 
 export default function Home() {
   const schedules = getSchedules();
@@ -32,9 +37,22 @@ export default function Home() {
         <div className="absolute inset-0 bg-black/35 mix-blend-multiply" />
       </div>
 
+      <AutoRefresh />
       <OutageDashboard weeks={chartWeeks} status={currentStatus} />
     </main>
   );
+}
+
+export function generateMetadata(): Metadata {
+  const currentStatus = resolveCurrentStatus(getActualOutages());
+  const isLightOn = currentStatus.tone !== "warning";
+
+  return {
+    title: isLightOn ? "4U Світло є" : "4U Світла нема",
+    icons: {
+      icon: isLightOn ? "/favicon_on.ico" : "/favicon_off.ico",
+    },
+  };
 }
 
 function resolveCurrentStatus(actualRows: ActualOutageRow[]): PowerStatus {
