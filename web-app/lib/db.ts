@@ -1,6 +1,15 @@
 import Database from "better-sqlite3";
 import path from "node:path";
 
+const databasePath = process.env.SVITLO_DB_PATH
+  ? path.resolve(process.env.SVITLO_DB_PATH)
+  : path.resolve(process.cwd(), "..", "svitlo.db");
+
+const db = new Database(databasePath, {
+  fileMustExist: true,
+  readonly: true,
+});
+
 type ScheduleRow = {
   schedule_date: string;
   outages_json: string;
@@ -10,13 +19,6 @@ type ActualOutageRow = {
   start_ts: number;
   end_ts: number | null;
 };
-
-const databasePath = path.resolve(process.cwd(), "..", "svitlo.db");
-
-const db = new Database(databasePath, {
-  fileMustExist: true,
-  readonly: true,
-});
 
 export function getSchedules(): ScheduleRow[] {
   const statement = db.prepare<any[], ScheduleRow>(
