@@ -433,6 +433,16 @@ function resolveGaugeState(weeks: WeekForChart[], status: PowerStatus, now: Date
     };
   }
 
+  if (activePlan) {
+    return {
+      variant: "none",
+      topLabel: "До відключення",
+      primaryLabel: "чекаємо",
+      secondaryLabel: `Планове вікно ${formatTimeRange(activePlan.start, activePlan.end)} ще триває.`,
+      footnote: "Може вимкнути будь-якої миті.",
+    };
+  }
+
   if (!nextPlan) {
     return {
       variant: "none",
@@ -463,7 +473,7 @@ function resolveGaugeState(weeks: WeekForChart[], status: PowerStatus, now: Date
     variant: "uptime",
     topLabel: "До відключення",
     primaryLabel:
-      remainingMinutes > 0 ? `~${formatDuration(remainingMinutes)}` : "ще трошки",
+      remainingMinutes > 0 ? `~${formatDuration(remainingMinutes)}` : "ще трохи",
     secondaryLabel:
       completedMinutes > 0 ? `Світло є вже ${formatDuration(completedMinutes)}` : undefined,
     footnote: ``,
