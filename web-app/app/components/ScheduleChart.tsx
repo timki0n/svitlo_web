@@ -134,6 +134,7 @@ function createBaseOptions(isMobile: boolean): ChartOptions<"bar"> {
     indexAxis: "y",
     responsive: true,
     maintainAspectRatio: false,
+    animation: false,
     interaction: {
         mode: "nearest",
         axis: "xy",
@@ -360,7 +361,7 @@ export function ScheduleChart({ days, isPowerOutNow = false }: ScheduleChartProp
           <article key={day.key} className={cardClassName}>
             {isToday && (
               <div
-                className={`pointer-events-none absolute -inset-8 z-0 animate-pulse blur-3xl ${
+                className={`pointer-events-none absolute -inset-8 z-0 md:animate-pulse blur-3xl ${
                   isOutageNow ? "bg-rose-400/20" : "bg-emerald-400/15"
                 }`}
               />

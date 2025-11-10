@@ -48,14 +48,14 @@ export function OutageDashboard({ weeks, status }: OutageDashboardProps) {
         className={`relative overflow-hidden rounded-2xl border text-center transition ${toneClassName} ${shadowClassName}`}
       >
         <div
-          className="pointer-events-none absolute inset-[-20%] z-0 animate-pulse blur-3xl"
+          className="pointer-events-none absolute inset-[-20%] z-0 md:animate-pulse blur-3xl"
           style={{
             background: glowRadial,
             animationDuration: "4s",
           }}
         />
         <div
-          className="pointer-events-none absolute inset-[-20%] z-0 hidden animate-pulse blur-3xl dark:block"
+          className="pointer-events-none absolute inset-[-20%] z-0 hidden md:animate-pulse blur-3xl dark:block"
           style={{
             background: glowRadialDark,
             animationDuration: "4s",
