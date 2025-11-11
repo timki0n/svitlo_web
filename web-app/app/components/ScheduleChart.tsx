@@ -82,7 +82,7 @@ const presentLinePlugin: Plugin<"bar"> = {
       const offsetPx = 8; // зсув вниз від центру
       const y = Math.min(chartArea.bottom - 1, Math.max(chartArea.top + 1, (yCenter as number) + offsetPx));
       ctx.save();
-      ctx.strokeStyle = "#16a34a";
+      ctx.strokeStyle = "rgba(0, 235, 20, 0.3)";
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(x1, y);
@@ -491,8 +491,22 @@ export function ScheduleChart({ days, isPowerOutNow = false }: ScheduleChartProp
                   ? "rgba(240, 20, 10, 0.7)"
                   : "rgba(220, 150, 10, 0.7)";
 
+            // Акуратні лейбли без префіксів часу з беку
+            const displayLabel =
+              segment.type === "Present"
+                ? TYPE_LABELS.Present
+                : segment.type === "Definite"
+                  ? TYPE_LABELS.Definite
+                  : segment.type === "Possible"
+                    ? TYPE_LABELS.Possible
+                    : segment.type === "Maintenance"
+                      ? TYPE_LABELS.Maintenance
+                      : segment.type === "Actual"
+                        ? "Факт"
+                        : TYPE_LABELS[segment.type] ?? segment.label;
+
             return {
-              label: segment.label,
+              label: displayLabel,
               data: [[relativeStart, relativeEnd]],
               backgroundColor: segment.type === "Present" ? "rgba(0,0,0,0)" : pickColor(segment.type),
               stack: stackKey,
