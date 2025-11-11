@@ -17,6 +17,7 @@ type DayForChart = {
   nowHour?: number | null;
   dateISO: string | null;
   isPlaceholder?: boolean;
+  status?: string | null;
 };
 
 type WeekForChart = {

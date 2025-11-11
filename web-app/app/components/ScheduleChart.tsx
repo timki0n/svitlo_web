@@ -59,6 +59,40 @@ const currentTimeLinePlugin: Plugin<"bar"> = {
   },
 };
 
+// Малює «Present» як тонку лінію по центру рядка
+const presentLinePlugin: Plugin<"bar"> = {
+  id: "presentLine",
+  afterDatasetsDraw(chart) {
+    const xScale = chart.scales.x;
+    const yScale = chart.scales.y;
+    const { ctx, chartArea } = chart;
+    const metaList = chart.getSortedVisibleDatasetMetas();
+    for (const meta of metaList) {
+      const ds: any = chart.data.datasets[meta.index] as any;
+      if (!ds || !ds.isPresent) continue;
+      const start: number | undefined = ds.svitloRangeStart;
+      const end: number | undefined = ds.svitloRangeEnd;
+      if (typeof start !== "number" || typeof end !== "number") continue;
+      const x1 = xScale.getPixelForValue(start);
+      const x2 = xScale.getPixelForValue(end);
+      if (!Number.isFinite(x1) || !Number.isFinite(x2) || x2 <= x1) continue;
+      // є одна категорія (індекс 0) — беремо центр рядка і опускаємо лінію нижче
+      const yCenter = yScale.getPixelForValue(0);
+      if (!Number.isFinite(yCenter)) continue;
+      const offsetPx = 8; // зсув вниз від центру
+      const y = Math.min(chartArea.bottom - 1, Math.max(chartArea.top + 1, (yCenter as number) + offsetPx));
+      ctx.save();
+      ctx.strokeStyle = "#16a34a";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x1, y);
+      ctx.lineTo(x2, y);
+      ctx.stroke();
+      ctx.restore();
+    }
+  },
+};
+
 ChartJS.register(
   CategoryScale,
   LinearScale,
@@ -66,7 +100,8 @@ ChartJS.register(
   Title,
   Tooltip,
   Legend,
-  currentTimeLinePlugin
+  currentTimeLinePlugin,
+  presentLinePlugin
 );
 
 type ScheduleChartProps = {
@@ -79,6 +114,7 @@ const TYPE_COLORS: Record<string, string> = {
   Possible: "#f97316",
   Maintenance: "#3b82f6",
   Actual: "rgba(240, 20, 10, 0.7)",
+  Present: "#16a34a",
   Unknown: "#22c55e",
 };
 
@@ -87,6 +123,7 @@ const TYPE_LABELS: Record<string, string> = {
   Possible: "Можливе відключення",
   Maintenance: "Планове обслуговування",
   Actual: "Фактичне відключення",
+  Present: "Світло було",
   Unknown: "Інший тип",
 };
 
@@ -150,7 +187,21 @@ function createBaseOptions(isMobile: boolean): ChartOptions<"bar"> {
       tooltip: {
         callbacks: {
           label(context) {
-            return ` ${context.dataset.label ?? ""}`;
+            const ds: any = context.dataset as any;
+            const start: number | undefined = ds?.svitloRangeStart;
+            const end: number | undefined = ds?.svitloRangeEnd;
+            const base = ds?.label ?? "";
+            if (typeof start === "number" && typeof end === "number") {
+              const dur = Math.max(end - start, 0);
+              return `${base}: ${formatHourTick(start)}–${formatHourTick(end)} (${formatHoursWithUnits(dur)})`;
+            }
+            // fallback
+            const raw = context.raw as number[] | undefined;
+            if (Array.isArray(raw) && raw.length === 2) {
+              const dur = Math.max(raw[1] - raw[0], 0);
+              return `${base}: ${formatHourTick(raw[0])}–${formatHourTick(raw[1])} (${formatHoursWithUnits(dur)})`;
+            }
+            return ` ${base}`;
           },
         },
       },
@@ -241,13 +292,17 @@ export function ScheduleChart({ days, isPowerOutNow = false }: ScheduleChartProp
 
     days.forEach((day) => {
       day.segments.forEach((segment) => items.add(segment.type));
+      // якщо є фактичні сегменти — у легенді показуємо і "Present"
+      if (day.segments.some((s) => s.source === "actual")) {
+        items.add("Present");
+      }
     });
 
     return Array.from(items);
   }, [days]);
 
   const orderedLegendTypes = useMemo(() => {
-    const order = ["Definite", "Actual", "Possible", "Maintenance", "Unknown"];
+    const order = ["Definite", "Actual", "Present", "Possible", "Maintenance", "Unknown"];
     const dynamic = legendTypes.filter((type) => !order.includes(type));
 
     return [...order.filter((type) => legendTypes.includes(type)), ...dynamic];
@@ -312,9 +367,116 @@ export function ScheduleChart({ days, isPowerOutNow = false }: ScheduleChartProp
         const hasActualSummary = limitedActualHours > 0;
 
         const stackOffsets = new Map<string, number>();
+        // Допоміжні функції для побудови інтервалів "світло є" на базі фактичних відключень
+        type SimpleRange = { start: number; end: number };
+        const clampRange = (r: SimpleRange): SimpleRange | null => {
+          const start = Math.max(0, Math.min(24, r.start));
+          const end = Math.max(0, Math.min(24, r.end));
+          if (end - start <= 0) return null;
+          return { start, end };
+        };
+        const mergeRanges = (ranges: SimpleRange[]): SimpleRange[] => {
+          const sorted = ranges
+            .map((r) => clampRange(r))
+            .filter((r): r is SimpleRange => r != null)
+            .sort((a, b) => a.start - b.start);
+          const merged: SimpleRange[] = [];
+          const EPS = 1e-6;
+          for (const r of sorted) {
+            const last = merged[merged.length - 1];
+            if (!last) {
+              merged.push({ ...r });
+            } else if (r.start <= last.end + EPS) {
+              last.end = Math.max(last.end, r.end);
+            } else {
+              merged.push({ ...r });
+            }
+          }
+          return merged;
+        };
+        const invertRanges = (ranges: SimpleRange[], windowEnd: number): SimpleRange[] => {
+          const merged = mergeRanges(
+            ranges.map((r) => ({
+              start: Math.max(0, Math.min(windowEnd, r.start)),
+              end: Math.max(0, Math.min(windowEnd, r.end)),
+            }))
+          );
+          const inv: SimpleRange[] = [];
+          let cursor = 0;
+          for (const r of merged) {
+            if (r.start > cursor) {
+              inv.push({ start: cursor, end: r.start });
+            }
+            cursor = Math.max(cursor, r.end);
+          }
+          if (cursor < windowEnd) {
+            inv.push({ start: cursor, end: windowEnd });
+          }
+          return inv;
+        };
+
+        // Розрахунок комбінованих сегментів для "actual": відключення + присутнє світло
+        const actualOutageRanges: SimpleRange[] = day.segments
+          .filter((s) => s.source === "actual")
+          .map((s) => ({ start: s.startHour, end: s.endHour }));
+        // межа відображення фактичних/присутніх інтервалів:
+        // - минулі дні: до 24
+        // - сьогодні: до поточного часу
+        // - майбутні дні: 0 (нічого не показуємо)
+        const now = new Date();
+        const clientNowHour = now.getHours() + now.getMinutes() / 60;
+        const providedNow = day.nowHour ?? null;
+        let actualWindowEnd = 24;
+        if (dayDate && dayDate < todayStart) {
+          actualWindowEnd = 24;
+        } else if (dayDate && dayDate.getTime() === todayStart.getTime()) {
+          actualWindowEnd = Math.max(0, Math.min(24, providedNow ?? clientNowHour));
+        } else {
+          actualWindowEnd = 0;
+        }
+
+        const mergedActual = mergeRanges(
+          actualOutageRanges
+            .map((r) => ({
+              start: Math.max(0, Math.min(actualWindowEnd, r.start)),
+              end: Math.max(0, Math.min(actualWindowEnd, r.end)),
+            }))
+            .filter((r) => r.end > r.start)
+        );
+        const presentRanges = invertRanges(mergedActual, actualWindowEnd);
+
+        // Перетворюємо діапазони в сегменти з відповідними типами
+        let idx = 0;
+        const actualSegmentsCombined = [
+          // присутнє світло (зелений)
+          ...presentRanges.map((r) => ({
+            id: `present-${day.key}-${idx++}`,
+            source: "actual" as const,
+            startHour: r.start,
+            endHour: r.end,
+            type: "Present",
+            label: "Світло",
+            durationHours: r.end - r.start,
+          })),
+          // фактичні відключення (червоний)
+          ...mergedActual.map((r) => ({
+            id: `actual-${day.key}-${idx++}`,
+            source: "actual" as const,
+            startHour: r.start,
+            endHour: r.end,
+            type: "Actual",
+            label: "Факт",
+            durationHours: r.end - r.start,
+          })),
+        ].sort((a, b) => a.startHour - b.startHour);
+
+        // Інші сегменти (план тощо) залишаємо як є
+        const nonActualSegments = day.segments.filter((s) => s.source !== "actual");
+        const segmentsForChart = [...nonActualSegments, ...actualSegmentsCombined];
+
         const data: ChartData<"bar"> = {
           labels: [day.title],
-          datasets: day.segments.map((segment) => {
+          datasets: segmentsForChart.map((segment) => {
             const stackKey = `${segment.source}-${day.key}`;
             const previousEnd = stackOffsets.get(stackKey) ?? 0;
             const relativeStart = Math.max(segment.startHour - previousEnd, 0);
@@ -322,17 +484,29 @@ export function ScheduleChart({ days, isPowerOutNow = false }: ScheduleChartProp
 
             stackOffsets.set(stackKey, segment.endHour);
 
+            const borderColor =
+              segment.type === "Present"
+                ? "#16a34a"
+                : segment.source === "actual"
+                  ? "rgba(240, 20, 10, 0.7)"
+                  : "rgba(220, 150, 10, 0.7)";
+
             return {
               label: segment.label,
               data: [[relativeStart, relativeEnd]],
-              backgroundColor: pickColor(segment.type),
+              backgroundColor: segment.type === "Present" ? "rgba(0,0,0,0)" : pickColor(segment.type),
               stack: stackKey,
               borderRadius: 1,
               borderSkipped: false,
-              borderColor: segment.source === "actual" ? "rgba(240, 20, 10, 0.7)" : "rgba(220, 150, 10, 0.7)",
-              borderWidth: 0,
+              borderColor,
+              borderWidth: segment.type === "Present" ? 0 : 0,
               barThickness: 16,
               order: segment.source === "actual" ? 1 : 0,
+              // абсолютні межі для тултіпів
+              svitloRangeStart: segment.startHour,
+              svitloRangeEnd: segment.endHour,
+              // прапорець для плагіна лінії
+              isPresent: segment.type === "Present",
             };
           }),
         };
@@ -436,14 +610,17 @@ export function ScheduleChart({ days, isPowerOutNow = false }: ScheduleChartProp
                   })()}
                 </div>
               </header>
-              <div className="relative h-20 w-full">
-                <Bar options={options} data={data} />
-                {placeholderMessage && (
-                  <div className="pointer-events-none absolute inset-x-0 top-5 flex items-start justify-center text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                    {placeholderMessage}
-                  </div>
-                )}
-              </div>
+              {placeholderMessage === "Дані не знайдено" ? null : (
+                <div className="relative h-20 w-full">
+                  <Bar options={options} data={data} />
+                  {placeholderMessage &&
+                    !(isToday && placeholderMessage === "⌛ Очікуємо оновлення") && (
+                    <div className="pointer-events-none absolute inset-x-0 top-5 flex items-start justify-center text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                      {placeholderMessage}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </article>
         );

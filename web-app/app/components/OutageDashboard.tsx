@@ -94,11 +94,16 @@ type PlanSegment = {
   durationMinutes: number;
 };
 
-type PlanSummary = {
-  segments: PlanSegment[];
-  current: PlanSegment | null;
-  next: PlanSegment | null;
-};
+type PlanSummary =
+  | {
+      kind: "emergency";
+    }
+  | {
+      kind: "normal";
+      segments: PlanSegment[];
+      current: PlanSegment | null;
+      next: PlanSegment | null;
+    };
 
 function PlanSummaryBlock({ summary, now }: { summary: PlanSummary | null; now: Date }) {
   if (!summary) {
@@ -110,6 +115,17 @@ function PlanSummaryBlock({ summary, now }: { summary: PlanSummary | null; now: 
         <p className="text-sm text-zinc-600 dark:text-zinc-300">
           На сьогодні планові відключення не заплановані.
         </p>
+      </div>
+    );
+  }
+
+  if (summary.kind === "emergency") {
+    return (
+      <div className="flex w-full flex-col gap-3 rounded-xl border border-zinc-200 bg-white/70 p-5 text-left shadow-sm dark:border-zinc-700 dark:bg-zinc-900/40">
+        <h3 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
+          Планові відключення на сьогодні
+        </h3>
+        <p className="text-sm text-zinc-700 dark:text-zinc-200">⚠️ Графік не діє. Діють екстрені відключення.</p>
       </div>
     );
   }
@@ -174,6 +190,10 @@ function resolvePlanSummary(weeks: WeekForChart[], targetDate: Date): PlanSummar
   const dayByKey = new Map(weeks.flatMap((week) => week.days).map((day) => [day.key, day]));
   const currentDay = dayByKey.get(formatDateKey(targetDate));
   const nextDay = dayByKey.get(formatDateKey(addDays(targetDate, 1)));
+
+  if (currentDay?.status === "EmergencyShutdowns") {
+    return { kind: "emergency" };
+  }
 
   if ((!currentDay || currentDay.isPlaceholder) && (!nextDay || nextDay.isPlaceholder)) {
     return null;
@@ -246,6 +266,7 @@ function resolvePlanSummary(weeks: WeekForChart[], targetDate: Date): PlanSummar
   const next = normalised.find((segment) => segment.start.getTime() > nowTime) ?? null;
 
   return {
+    kind: "normal",
     segments: normalised,
     current,
     next,
@@ -392,8 +413,27 @@ function resolveGaugeState(weeks: WeekForChart[], status: PowerStatus, now: Date
   const planSegments = collectPlanSegments(weeks);
   const nowTime = now.getTime();
   const activePlan = planSegments.find((segment) => segment.start.getTime() <= nowTime && nowTime < segment.end.getTime());
-  const nextPlan = planSegments.find((segment) => segment.start.getTime() > nowTime);
+  let nextPlan = planSegments.find((segment) => segment.start.getTime() > nowTime);
   const previousPlan = [...planSegments].reverse().find((segment) => segment.end.getTime() <= nowTime);
+  const allDays = weeks.flatMap((week) => week.days);
+  const todayDay = allDays.find((day) => day.key === formatDateKey(now));
+  const todayStatus = todayDay?.status ?? null;
+
+  if (todayStatus === "EmergencyShutdowns") {
+    return {
+      variant: "none",
+      topLabel: "ГРАФІК НЕ ДІЄ",
+      primaryLabel: "⚠️⚠️⚠️",
+      secondaryLabel: "Діють екстрені відключення.",
+      footnote: "Слідкуйте за оновленнями.",
+    };
+  }
+
+  const earlyStartGraceMs = 45 * 60 * 1000;
+  const upcomingWithGrace = planSegments.find((segment) => {
+    const startTime = segment.start.getTime();
+    return nowTime >= startTime - earlyStartGraceMs && nowTime < startTime;
+  });
 
   if (status.tone === "warning") {
     const since = status.sinceISO ? new Date(status.sinceISO) : null;
@@ -434,12 +474,31 @@ function resolveGaugeState(weeks: WeekForChart[], status: PowerStatus, now: Date
   }
 
   if (activePlan) {
+    const totalMinutes = Math.max(diffMinutes(activePlan.start, activePlan.end), 1);
+    const elapsedMinutes = Math.min(diffMinutes(activePlan.start, now), totalMinutes);
+    const isEarlyWindow = elapsedMinutes < totalMinutes / 2;
+
+    if (isEarlyWindow) {
+      return {
+        variant: "none",
+        topLabel: "До відключення",
+        primaryLabel: "невідомо",
+        secondaryLabel: `Планове вікно ${formatTimeRange(activePlan.start, activePlan.end)} ще триває.`,
+        footnote: "Може зникнути будь-якої миті.",
+      };
+    }
+
+    const afterCurrent = planSegments.find(
+      (segment) => segment.start.getTime() >= activePlan.end.getTime()
+    );
+    nextPlan = afterCurrent ?? nextPlan;
+  } else if (upcomingWithGrace) {
     return {
       variant: "none",
       topLabel: "До відключення",
-      primaryLabel: "чекаємо",
-      secondaryLabel: `Планове вікно ${formatTimeRange(activePlan.start, activePlan.end)} ще триває.`,
-      footnote: "Може вимкнути будь-якої миті.",
+      primaryLabel: "невідомо",
+      secondaryLabel: `Планове вікно ${formatTimeRange(upcomingWithGrace.start, upcomingWithGrace.end)} ось-ось почнеться.`,
+      footnote: "Може зникнути будь-якої миті.",
     };
   }
 
@@ -447,8 +506,8 @@ function resolveGaugeState(weeks: WeekForChart[], status: PowerStatus, now: Date
     return {
       variant: "none",
       topLabel: "До відключення",
-      primaryLabel: "Не заплановано",
-      secondaryLabel: previousPlan ? `Останнє завершилось ${formatShortDateTime(previousPlan.end, now)}` : undefined,
+      primaryLabel: "невідомо",
+      secondaryLabel: previousPlan ? `Останній графік завершився ${formatShortDateTime(previousPlan.end, now)}` : undefined,
       footnote: "Графік на майбутні дні відсутній",
     };
   }

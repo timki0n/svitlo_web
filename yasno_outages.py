@@ -107,6 +107,9 @@ class YasnoOutages:
         today_block = group.get("today", {})
         tomorrow_block = group.get("tomorrow", {})
 
+        if today_block.get("status") == "EmergencyShutdowns":
+            return "🚨 Діють екстрені відключення. Графік не діє."
+
         slots: List[tuple[dt.datetime, dt.datetime]] = []
         past_outages: List[tuple[dt.datetime, dt.datetime]] = []
         schedule_available = False
@@ -266,6 +269,9 @@ class YasnoOutages:
                 elapsed = now - nearest_outage
                 if elapsed <= dt.timedelta(minutes=self.missed_start_grace_minutes):
                     return f"Відключення мало відбутися о {nearest_outage.strftime('%H:%M')}, очікуйте"
+
+        if today_block.get("status") == "EmergencyShutdowns":
+            return "🚨 Діють екстрені відключення. Графік не діє."
 
         if not future_outages:
             return "💡 Сьогодні відключень не передбачено"

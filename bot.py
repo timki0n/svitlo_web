@@ -92,6 +92,11 @@ def build_today_message(outages_info: dict) -> str:
     outages = outages_info.get("outages", [])
 
     if status != "ScheduleApplies":
+        if status == "EmergencyShutdowns":
+            return (
+                f"📅 Розклад на {date_str}\n"
+                f"🚨 Графік не діє. Діють екстрені відключення."
+            )
         if status == "WaitingForSchedule":
             return (
                 f"📅 Розклад на {date_str}\n"
@@ -209,7 +214,12 @@ async def cmd_tomorrow(m: Message):
         outages = outages_info["outages"]
         
         if status != "ScheduleApplies":
-            if status == "WaitingForSchedule":
+            if status == "EmergencyShutdowns":
+                await m.answer(
+                    f"📅 Розклад на {date_str}\n"
+                    f"🚨 Графік не діє. Діють екстрені відключення."
+                )
+            elif status == "WaitingForSchedule":
                 await m.answer(
                     f"📅 Розклад на {date_str}\n"
                     f"⌛ Очікуємо оновлення"

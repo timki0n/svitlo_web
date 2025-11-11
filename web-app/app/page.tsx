@@ -142,9 +142,11 @@ function prepareWeeksForChart(
     segments: DayForChart["segments"];
     plannedHours: number;
     actualHours: number;
+    status: string | null;
   };
 
   const grouped = new Map<string, GroupAccumulator>();
+  const statusByDate = new Map<string, string | null>();
 
   const now = new Date();
   const nowHour = clampHour(getHourFraction(now));
@@ -176,6 +178,7 @@ function prepareWeeksForChart(
         segments: [entry],
         plannedHours: plannedDelta,
         actualHours: actualDelta,
+        status: segment.scheduleStatus ?? null,
       });
 
       return;
@@ -184,6 +187,9 @@ function prepareWeeksForChart(
     existing.segments.push(entry);
     existing.plannedHours += plannedDelta;
     existing.actualHours += actualDelta;
+    if (existing.status == null && segment.scheduleStatus != null) {
+      existing.status = segment.scheduleStatus;
+    }
 
     if (!existing.date && segment.groupDate) {
       existing.date = segment.groupDate;
@@ -191,7 +197,32 @@ function prepareWeeksForChart(
   };
 
   scheduleRows.forEach((row) => {
-    parseScheduleOutages(row).forEach(addSegment);
+    const status = row.status ?? null;
+    statusByDate.set(row.schedule_date, status);
+
+    const parsedSegments = parseScheduleOutages(row).map((segment) => ({
+      ...segment,
+      scheduleStatus: status,
+    }));
+
+    if (parsedSegments.length === 0) {
+      const existing = grouped.get(row.schedule_date);
+
+      if (!existing) {
+        grouped.set(row.schedule_date, {
+          dateLabel: formatGroupLabel(row.schedule_date),
+          date: parseScheduleDate(row.schedule_date),
+          segments: [],
+          plannedHours: 0,
+          actualHours: 0,
+          status,
+        });
+      } else if (existing.status == null) {
+        existing.status = status;
+      }
+    }
+
+    parsedSegments.forEach(addSegment);
   });
 
   parseActualOutages(actualRows).forEach(addSegment);
@@ -228,6 +259,7 @@ function prepareWeeksForChart(
         nowHour: value.date && isSameDay(value.date, now) ? nowHour : null,
         dateISO,
         isPlaceholder: sortedSegments.length === 0,
+        status: value.status ?? statusByDate.get(key) ?? null,
       };
     });
 
@@ -290,6 +322,7 @@ function prepareWeeksForChart(
           nowHour: baseNowHour,
           dateISO: existing.dateISO ?? dateISO,
           isPlaceholder: existing.segments.length === 0,
+          status: existing.status ?? statusByDate.get(key) ?? null,
         };
       }
 
@@ -302,6 +335,7 @@ function prepareWeeksForChart(
         nowHour: baseNowHour,
         dateISO,
         isPlaceholder: true,
+        status: statusByDate.get(key) ?? null,
       };
     });
 
@@ -331,6 +365,7 @@ type BaseParsedOutage = {
 
 type ParsedOutage = BaseParsedOutage & {
   source: "plan" | "actual";
+  scheduleStatus?: string | null;
 };
 
 function parseScheduleOutages(row: ScheduleRow): ParsedOutage[] {
@@ -348,6 +383,7 @@ function parseScheduleOutages(row: ScheduleRow): ParsedOutage[] {
         ...segment,
         id: `${segment.id}-plan`,
         source: "plan",
+      scheduleStatus: row.status ?? null,
       }));
   } catch (error) {
     console.warn("Не вдалося розпарсити outages_json:", error);
