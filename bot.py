@@ -181,6 +181,53 @@ async def cmd_start(m: Message):
         f"Група: {YASNO_GROUP}\n"
     )
 
+@router.message(Command("notifyweb"))
+async def cmd_notifyweb(m: Message, command: CommandObject):
+    """
+    Адмін-команда для ручної відправки сповіщення у веб-застосунок.
+    Використання:
+      /notifyweb type=power_outage_started title="Світло зникло" body="Тест"
+    Або:
+      /notifyweb {"type":"custom","title":"Тест","body":"Повідомлення"}
+    """
+    # Дозволяємо лише з адмін-чату
+    if m.chat.id != ADMIN_LOG_CHAT_ID:
+        return
+    if not WEB_NOTIFY_URL or not NOTIFY_BOT_TOKEN:
+        await m.answer("⚠️ WEB-сповіщення не налаштовано (перевір WEB_NOTIFY_URL/NOTIFY_BOT_TOKEN).")
+        return
+
+    args = command.args or ""
+    payload: dict[str, str] = {}
+    args_stripped = args.strip()
+    if args_stripped.startswith("{") and args_stripped.endswith("}"):
+        try:
+            obj = json.loads(args_stripped)
+            if isinstance(obj, dict):
+                for k in ("type", "title", "body"):
+                    if k in obj and isinstance(obj[k], str):
+                        payload[k] = obj[k]
+        except Exception:
+            await m.answer("❌ Невірний JSON у параметрах.")
+            return
+    else:
+        # Парсимо key=value з підтримкою лапок
+        try:
+            for match in re.finditer(r'(type|title|body)=(?:"([^"]*)"|\'([^\']*)\'|(\S+))', args):
+                key = match.group(1)
+                val = match.group(2) or match.group(3) or match.group(4) or ""
+                payload[key] = val
+        except Exception:
+            await m.answer("❌ Невірний формат параметрів. Спробуйте title=\"...\" тощо.")
+            return
+
+    ptype = str(payload.get("type") or "custom")
+    title = str(payload.get("title") or "Адмін-сповіщення")
+    body = str(payload.get("body") or "")
+
+    await web_notify({"type": ptype, "title": title, "body": body})
+    await m.answer(f"✅ Відправлено у WEB: type={ptype}\nЗаголовок: {title}\nТіло: {body[:200]}")
+
 @router.message(Command("status"))
 async def cmd_status(m: Message):
     print("status chat_id: " + str(m.chat.id))
