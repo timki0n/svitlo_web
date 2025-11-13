@@ -4,6 +4,9 @@ import asyncio
 import logging
 import time
 import contextlib
+import json
+import urllib.request
+import urllib.error
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Final
@@ -49,6 +52,8 @@ ALERT_CHAT_TARGETS: Final[tuple[tuple[int, int | None], ...]] = _parse_chat_targ
 UDP_PORT = int(os.getenv("UDP_PORT", "5005"))
 DEFAULT_THRESHOLD_SEC = float(os.getenv("THRESHOLD_SEC", "6"))
 SCHEDULE_POLL_INTERVAL_SEC = 60
+WEB_NOTIFY_URL = os.getenv("WEB_NOTIFY_URL", "http://127.0.0.1:3000/api/notify")
+NOTIFY_BOT_TOKEN = os.getenv("NOTIFY_BOT_TOKEN", "")
 
 TZ = ZoneInfo("Europe/Kyiv")
 
@@ -143,6 +148,30 @@ async def notify(bot: Bot, text: str):
             await asyncio.sleep(0.05)  # невеликий тротлінг між повідомленнями
         except Exception as e:
             logging.error("send_message failed (%s): %s", chat_id, e)
+
+async def web_notify(payload: dict):
+    """
+    Надсилає серверу веб-додатка подію, яка:
+      - очищає відповідний кеш
+      - розсилає SSE у відкриті вкладки
+      - надсилає PWA push-нотифікацію
+    """
+    if not WEB_NOTIFY_URL or not NOTIFY_BOT_TOKEN:
+        return
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        WEB_NOTIFY_URL,
+        data=body,
+        headers={"Content-Type": "application/json", "x-bot-token": NOTIFY_BOT_TOKEN},
+        method="POST",
+    )
+    def _do():
+        try:
+            with urllib.request.urlopen(req, timeout=2.5) as _:
+                return
+        except urllib.error.URLError:
+            return
+    await asyncio.to_thread(_do)
 
 # ───────────────── Telegram handlers ─────────────────
 @router.message(Command("start"))
@@ -284,6 +313,11 @@ async def schedule_monitor(bot: Bot):
                 await db.upsert_schedule(today_date, status, outages_info.get("outages"), raw_slots)
             if message_body:
                 await notify(bot, f"🔔 Графік на сьогодні оновлено!\n\n{message_body}")
+                asyncio.create_task(web_notify({
+                    "type": "schedule_updated",
+                    "title": "Оновлено графік на сьогодні",
+                    "body": message_body,
+                }))
 
             await asyncio.sleep(SCHEDULE_POLL_INTERVAL_SEC)
         except asyncio.CancelledError:
@@ -331,6 +365,11 @@ async def schedule_monitor_tomorrow(bot: Bot):
                 await db.upsert_schedule(tomorrow_date, current_status, outages_info.get("outages"), raw_slots)
             if message_body:
                 await notify(bot, f"🔔 З'явився графік на завтра!\n\n{message_body}")
+                asyncio.create_task(web_notify({
+                    "type": "schedule_updated",
+                    "title": "Оновлено графік на завтра",
+                    "body": message_body,
+                }))
 
             await asyncio.sleep(SCHEDULE_POLL_INTERVAL_SEC + 1)
         except asyncio.CancelledError:
@@ -374,9 +413,19 @@ async def power_monitor(bot: Bot):
                             bot,
                             f"🔔⚠️ Світло ЗНИКЛО.\n{restore_msg}"
                         )
+                        asyncio.create_task(web_notify({
+                            "type": "power_outage_started",
+                            "title": "Світло зникло",
+                            "body": restore_msg,
+                        }))
                     except Exception as e:
                         logging.error("Failed to get restore message: %s", e)
                         await notify(bot, "⚠️ Світло ЗНИКЛО.")
+                        asyncio.create_task(web_notify({
+                            "type": "power_outage_started",
+                            "title": "Світло зникло",
+                            "body": "",
+                        }))
             else:
                 if active_outage is not None and secs != float("inf"):
                     start_ts = await db.log_outage_end(now)
@@ -387,6 +436,11 @@ async def power_monitor(bot: Bot):
                         f"🔔✅ Світло ВІДНОВЛЕНО.\n"
                         f"Час без світла: {fmt_duration(downtime)}",
                     )
+                    asyncio.create_task(web_notify({
+                        "type": "power_restored",
+                        "title": "Світло відновлено",
+                        "body": f"Час без світла: {fmt_duration(downtime)}",
+                    }))
             await asyncio.sleep(1.0)
         except asyncio.CancelledError:
             break

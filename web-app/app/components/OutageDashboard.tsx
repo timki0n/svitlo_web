@@ -1,5 +1,6 @@
 import { ScheduleChartSection } from "./ScheduleChartSection";
 import { PowerStatusGauge, type GaugeVisualState } from "./PowerStatusGauge";
+import NotificationToggleIcon from "./NotificationToggleIcon";
 import type { WeekForChart } from "./scheduleTypes";
 
 export type PowerStatus = {
@@ -47,6 +48,7 @@ export function OutageDashboard({ weeks, status }: OutageDashboardProps) {
       <div
         className={`relative overflow-hidden rounded-2xl border text-center transition ${toneClassName} ${shadowClassName}`}
       >
+        <NotificationToggleIcon />
         <div
           className="pointer-events-none absolute inset-[-20%] z-0 md:animate-pulse blur-3xl"
           style={{
@@ -429,12 +431,6 @@ function resolveGaugeState(weeks: WeekForChart[], status: PowerStatus, now: Date
     };
   }
 
-  const earlyStartGraceMs = 45 * 60 * 1000;
-  const upcomingWithGrace = planSegments.find((segment) => {
-    const startTime = segment.start.getTime();
-    return nowTime >= startTime - earlyStartGraceMs && nowTime < startTime;
-  });
-
   if (status.tone === "warning") {
     const since = status.sinceISO ? new Date(status.sinceISO) : null;
     const start = since ?? activePlan?.start ?? now;
@@ -492,14 +488,6 @@ function resolveGaugeState(weeks: WeekForChart[], status: PowerStatus, now: Date
       (segment) => segment.start.getTime() >= activePlan.end.getTime()
     );
     nextPlan = afterCurrent ?? nextPlan;
-  } else if (upcomingWithGrace) {
-    return {
-      variant: "none",
-      topLabel: "До відключення",
-      primaryLabel: "невідомо",
-      secondaryLabel: `Планове вікно ${formatTimeRange(upcomingWithGrace.start, upcomingWithGrace.end)} ось-ось почнеться.`,
-      footnote: "Може зникнути будь-якої миті.",
-    };
   }
 
   if (!nextPlan) {

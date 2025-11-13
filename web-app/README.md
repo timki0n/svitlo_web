@@ -1,5 +1,22 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+Environment variables (server):
+
+- NOTIFY_BOT_TOKEN — shared secret for /api/notify
+- VAPID_SUBJECT — contact, e.g. mailto:admin@example.com
+- VAPID_PUBLIC_KEY — VAPID public key (base64url)
+- VAPID_PRIVATE_KEY — VAPID private key
+- PUSH_SUBS_DB_PATH — path to push_subs.db (default: ../data/push_subs.db)
+
+Environment variables (client):
+
+- NEXT_PUBLIC_VAPID_PUBLIC_KEY — same as VAPID_PUBLIC_KEY (exposed to browser)
+
+Bot side:
+
+- WEB_NOTIFY_URL — e.g. http://127.0.0.1:3000/api/notify
+- NOTIFY_BOT_TOKEN — same as server NOTIFY_BOT_TOKEN
+
 ## Getting Started
 
 First, run the development server:

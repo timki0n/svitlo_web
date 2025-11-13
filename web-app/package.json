@@ -12,6 +12,7 @@
     "better-sqlite3": "^12.4.1",
     "chart.js": "^4.5.1",
     "echarts": "^6.0.0",
+    "web-push": "^3.6.6",
     "next": "16.0.1",
     "react": "19.2.0",
     "react-chartjs-2": "^5.3.1",
