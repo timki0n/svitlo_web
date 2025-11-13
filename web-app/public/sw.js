@@ -16,6 +16,7 @@ self.addEventListener('push', (event) => {
   // Іконка: для вимкнення світла — окремий значок, інакше — стандартний
   const icon =
     type === 'power_outage_started' ? '/icons/icon-192-off.png' : '/icons/icon-192.png';
+  const isPowerEvent = type === 'power_outage_started' || type === 'power_restored';
   const options = {
     body,
     icon,
@@ -23,6 +24,8 @@ self.addEventListener('push', (event) => {
     data,
     tag,
     renotify: Boolean(tag),
+    requireInteraction: true,
+    vibrate: [200, 100, 200, 100, 200],
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });
