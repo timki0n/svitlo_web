@@ -12,6 +12,8 @@ type NotifyPayload = {
 
 const TOKEN = process.env.NOTIFY_BOT_TOKEN || "";
 
+console.log("NOTIFY_BOT_TOKEN", process.env.NOTIFY_BOT_TOKEN);
+
 export async function POST(req: Request) {
   const token = req.headers.get("x-bot-token") || "";
   if (!TOKEN || token !== TOKEN) {
