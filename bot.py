@@ -374,7 +374,7 @@ async def schedule_monitor(bot: Bot):
                 await notify(bot, f"🔔 Графік на сьогодні оновлено!\n\n{message_body}")
                 asyncio.create_task(web_notify({
                     "type": "schedule_updated",
-                    "title": "Оновлено графік на сьогодні",
+                    "title": "🔔 Графік на сьогодні оновлено!",
                     "body": message_body,
                 }))
 
@@ -426,7 +426,7 @@ async def schedule_monitor_tomorrow(bot: Bot):
                 await notify(bot, f"🔔 З'явився графік на завтра!\n\n{message_body}")
                 asyncio.create_task(web_notify({
                     "type": "schedule_updated",
-                    "title": "Оновлено графік на завтра",
+                    "title": "🔔 З'явився графік на завтра!",
                     "body": message_body,
                 }))
 
@@ -490,15 +490,24 @@ async def power_monitor(bot: Bot):
                     start_ts = await db.log_outage_end(now)
                     effective_start = start_ts if start_ts is not None else now
                     downtime = max(0.0, now - effective_start)
-                    await notify(
-                        bot,
-                        f"🔔✅ Світло ВІДНОВЛЕНО.\n"
+                    nearest_msg = ""
+                    try:
+                        now_dt = datetime.fromtimestamp(now, tz=TZ)
+                        nearest_msg = await asyncio.to_thread(yasno.get_nearest_outage_message, now_dt)
+                    except Exception as e:
+                        logging.error("Failed to get nearest outage message: %s", e)
+                    body_lines = [
+                        "🔔✅ Світло ВІДНОВЛЕНО.",
                         f"Час без світла: {fmt_duration(downtime)}",
-                    )
+                    ]
+                    if nearest_msg:
+                        body_lines.append(nearest_msg)
+                    message_text = "\n".join(body_lines)
+                    await notify(bot, message_text)
                     asyncio.create_task(web_notify({
                         "type": "power_restored",
-                        "title": "Світло відновлено",
-                        "body": f"Час без світла: {fmt_duration(downtime)}",
+                        "title": "✅ Світло ВІДНОВЛЕНО.",
+                        "body": "\n".join(body_lines[1:]) if nearest_msg else body_lines[1],
                     }))
             await asyncio.sleep(1.0)
         except asyncio.CancelledError:

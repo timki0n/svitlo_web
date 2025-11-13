@@ -20,7 +20,7 @@ self.addEventListener('push', (event) => {
   const options = {
     body,
     icon,
-    badge: '/icons/icon-192.png',
+    badge: isPowerEvent ? icon : undefined,
     data,
     tag,
     renotify: Boolean(tag),
