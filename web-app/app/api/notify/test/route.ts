@@ -53,7 +53,7 @@ async function handle(payload: TestPayload, clearParam: string | null) {
   const pushResult = await sendPushToAll({
     title: enriched.title!,
     body: enriched.body!,
-    data: enriched.data,
+    data: { ...(enriched.data as any), type: enriched.type },
   });
 
   return {

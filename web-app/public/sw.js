@@ -22,7 +22,7 @@ self.addEventListener('push', (event) => {
     badge: '/icons/icon-192.png',
     data,
     tag,
-    renotify: true,
+    renotify: Boolean(tag),
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });

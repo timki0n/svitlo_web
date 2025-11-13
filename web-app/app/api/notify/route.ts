@@ -48,7 +48,7 @@ export async function POST(req: Request) {
     await sendPushToAll({
       title: payload.title ?? "4U Світло",
       body: payload.body ?? "",
-      data: payload.data ?? {},
+      data: { ...(payload.data ?? {}), type: payload.type },
     });
   } catch (error) {
     // do not fail the request if push sending fails
