@@ -9,9 +9,9 @@ type StoredSubscription = {
   created_at: number;
 };
 
-let db: Database.Database | null = null;
+let db: any | null = null;
 
-function ensureDb(): Database.Database {
+function ensureDb() {
   if (db) {
     return db;
   }
@@ -65,7 +65,7 @@ export function removeSubscriptionByEndpoint(endpoint: string): boolean {
 
 export function listSubscriptions(): StoredSubscription[] {
   const database = ensureDb();
-  const stmt = database.prepare<[]>(`SELECT id, endpoint, p256dh, auth, created_at FROM subscriptions`);
+  const stmt = database.prepare(`SELECT id, endpoint, p256dh, auth, created_at FROM subscriptions`);
   return stmt.all() as StoredSubscription[];
 }
 

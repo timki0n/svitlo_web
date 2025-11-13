@@ -228,6 +228,18 @@ async def cmd_notifyweb(m: Message, command: CommandObject):
     await web_notify({"type": ptype, "title": title, "body": body})
     await m.answer(f"✅ Відправлено у WEB: type={ptype}\nЗаголовок: {title}\nТіло: {body[:200]}")
 
+@router.message(Command("subcount"))
+async def cmd_subcount(m: Message):
+    # Доступ лише з адмін-чату
+    if m.chat.id != ADMIN_LOG_CHAT_ID:
+        return
+    try:
+        count = await db.get_push_subscriptions_count()
+        await m.answer(f"🔢 Кількість підписок: {count}")
+    except Exception as e:
+        logging.error("cmd_subcount error: %s", e)
+        await m.answer("❌ Не вдалося отримати кількість підписок")
+
 @router.message(Command("status"))
 async def cmd_status(m: Message):
     print("status chat_id: " + str(m.chat.id))

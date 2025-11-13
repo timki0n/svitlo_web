@@ -75,6 +75,13 @@ class Database:
         """
         return await asyncio.to_thread(self._get_active_outage_sync)
 
+    async def get_push_subscriptions_count(self) -> int:
+        """
+        Повертає кількість PWA підписок із окремої БД push_subs.db.
+        Якщо БД/таблиці немає — повертає 0.
+        """
+        return await asyncio.to_thread(self._get_push_subscriptions_count_sync)
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
@@ -288,6 +295,20 @@ class Database:
         if hasattr(value, "isoformat"):
             return value.isoformat()
         return str(value)
+
+    def _get_push_subscriptions_count_sync(self) -> int:
+        env_path = os.getenv("PUSH_SUBS_DB_PATH")
+        db_path = Path(env_path) if env_path else Path("data") / "push_subs.db"
+        if not db_path.exists():
+            return 0
+        try:
+            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.5) as conn:
+                cur = conn.execute("SELECT COUNT(*) FROM subscriptions")
+                row = cur.fetchone()
+                return int(row[0]) if row and row[0] is not None else 0
+        except sqlite3.Error as e:
+            # Якщо таблиці немає або інша проблема — повертаємо 0
+            return 0
 
 
 db = Database()
