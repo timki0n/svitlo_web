@@ -34,7 +34,8 @@ export default function Home() {
         <div
           className="absolute inset-0"
         />
-        <div className="absolute inset-0 bg-black/35 mix-blend-multiply" />
+        <div className="absolute inset-0 bg-white/50 mix-blend-screen dark:hidden" />
+        <div className="absolute inset-0 hidden bg-black/35 mix-blend-multiply dark:block" />
       </div>
 
       <AutoRefresh />
