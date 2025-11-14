@@ -12,9 +12,9 @@ import {
 
 export const dynamic = "force-dynamic";
 
-export default function Home() {
-  const schedules = getSchedules();
-  const actualOutages = getActualOutages();
+export default async function Home() {
+  const schedules = await getSchedules();
+  const actualOutages = await getActualOutages();
   const chartWeeks = prepareWeeksForChart(schedules, actualOutages);
   const currentStatus = resolveCurrentStatus(actualOutages);
   const backgroundImagePath =
@@ -44,8 +44,8 @@ export default function Home() {
   );
 }
 
-export function generateMetadata(): Metadata {
-  const currentStatus = resolveCurrentStatus(getActualOutages());
+export async function generateMetadata(): Promise<Metadata> {
+  const currentStatus = resolveCurrentStatus(await getActualOutages());
   const isLightOn = currentStatus.tone !== "warning";
 
   return {

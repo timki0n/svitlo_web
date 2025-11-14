@@ -1,5 +1,5 @@
+import { revalidateTag } from "next/cache";
 import { NextResponse } from "next/server";
-import { clearCache } from "@/lib/cache";
 import { broadcast } from "@/lib/events";
 import { sendPushToAll } from "@/lib/push";
 
@@ -27,18 +27,28 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "bad_request" }, { status: 400 });
   }
 
-  // Invalidate relevant caches
+  // Invalidate relevant caches via Next tags
+  const tagsToRevalidate = new Set<string>();
   switch (payload.type) {
     case "schedule_updated":
-      clearCache("schedules");
+      tagsToRevalidate.add("schedules");
       break;
     case "power_outage_started":
     case "power_restored":
-      clearCache("actual_outages");
+      tagsToRevalidate.add("actual_outages");
       break;
     default:
       break;
   }
+  await Promise.all(
+    Array.from(tagsToRevalidate).map(async (tag) => {
+      try {
+        await revalidateTag(tag);
+      } catch (error) {
+        console.error("revalidateTag error", tag, error);
+      }
+    })
+  );
 
   // Broadcast to active tabs
   broadcast(payload);

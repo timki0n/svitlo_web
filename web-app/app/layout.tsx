@@ -3,7 +3,6 @@ import { cookies } from "next/headers";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "./components/ThemeProvider";
-import EventBridge from "./components/EventBridge";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -41,10 +40,7 @@ export default async function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        <ThemeProvider initialTheme={themeCookie}>
-          <EventBridge />
-          {children}
-        </ThemeProvider>
+        <ThemeProvider initialTheme={themeCookie}>{children}</ThemeProvider>
       </body>
     </html>
   );

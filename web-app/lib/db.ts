@@ -1,7 +1,6 @@
+import { unstable_cache } from "next/cache";
 import Database from "better-sqlite3";
 import path from "node:path";
-
-import { getCachedValue } from "./cache";
 
 const USE_MOCK_DATA = process.env.SVITLO_USE_MOCK_DATA === "1";
 
@@ -43,11 +42,9 @@ const outagesStatement = db
 
 const { schedules: MOCK_SCHEDULES, outages: MOCK_OUTAGES } = createMockData();
 
-const DEFAULT_CACHE_TTL_MS = 30_000;
-const SCHEDULES_CACHE_KEY = "schedules";
-const ACTUAL_OUTAGES_CACHE_KEY = "actual_outages";
+const DEFAULT_REVALIDATE_SECONDS = 30;
 
-export function getSchedules(ttlMs = DEFAULT_CACHE_TTL_MS): ScheduleRow[] {
+function loadSchedules(): ScheduleRow[] {
   if (USE_MOCK_DATA) {
     return MOCK_SCHEDULES.map((row) => ({ ...row }));
   }
@@ -56,14 +53,10 @@ export function getSchedules(ttlMs = DEFAULT_CACHE_TTL_MS): ScheduleRow[] {
     throw new Error("schedulesStatement не ініціалізований");
   }
 
-  return getCachedValue(
-    SCHEDULES_CACHE_KEY,
-    ttlMs,
-    () => schedulesStatement.all() as ScheduleRow[]
-  );
+  return schedulesStatement.all() as ScheduleRow[];
 }
 
-export function getActualOutages(ttlMs = DEFAULT_CACHE_TTL_MS): ActualOutageRow[] {
+function loadActualOutages(): ActualOutageRow[] {
   if (USE_MOCK_DATA) {
     return MOCK_OUTAGES.map((row) => ({ ...row }));
   }
@@ -72,11 +65,33 @@ export function getActualOutages(ttlMs = DEFAULT_CACHE_TTL_MS): ActualOutageRow[
     throw new Error("outagesStatement не ініціалізований");
   }
 
-  return getCachedValue(
-    ACTUAL_OUTAGES_CACHE_KEY,
-    ttlMs,
-    () => outagesStatement.all() as ActualOutageRow[]
-  );
+  return outagesStatement.all() as ActualOutageRow[];
+}
+
+const cachedSchedules = unstable_cache(
+  async () => loadSchedules(),
+  ["lib/db/getSchedules"],
+  {
+    tags: ["schedules"],
+    revalidate: DEFAULT_REVALIDATE_SECONDS,
+  }
+);
+
+const cachedActualOutages = unstable_cache(
+  async () => loadActualOutages(),
+  ["lib/db/getActualOutages"],
+  {
+    tags: ["actual_outages"],
+    revalidate: DEFAULT_REVALIDATE_SECONDS,
+  }
+);
+
+export async function getSchedules(): Promise<ScheduleRow[]> {
+  return cachedSchedules();
+}
+
+export async function getActualOutages(): Promise<ActualOutageRow[]> {
+  return cachedActualOutages();
 }
 
 export type { ScheduleRow, ActualOutageRow };

@@ -2,9 +2,9 @@ import { NextResponse } from "next/server";
 
 import { getSchedules } from "@/lib/db";
 
-export function GET() {
+export async function GET() {
   try {
-    const data = getSchedules();
+    const data = await getSchedules();
 
     return NextResponse.json({ data });
   } catch (error) {

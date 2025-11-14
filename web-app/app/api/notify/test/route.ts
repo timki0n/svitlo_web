@@ -1,5 +1,5 @@
+import { revalidateTag } from "next/cache";
 import { NextResponse } from "next/server";
-import { clearCache } from "@/lib/cache";
 import { broadcast } from "@/lib/events";
 import { sendPushToAll } from "@/lib/push";
 
@@ -20,7 +20,7 @@ function authorize(req: Request): boolean {
   return header === TEST_TOKEN;
 }
 
-function resolveClearTargets(clearParam: string | null): string[] {
+function resolveRevalidateTargets(clearParam: string | null): string[] {
   switch ((clearParam || "").toLowerCase()) {
     case "all":
       return ["schedules", "actual_outages"];
@@ -36,9 +36,9 @@ function resolveClearTargets(clearParam: string | null): string[] {
 }
 
 async function handle(payload: TestPayload, clearParam: string | null) {
-  const clearTargets = resolveClearTargets(clearParam);
-  for (const key of clearTargets) {
-    clearCache(key);
+  const targets = resolveRevalidateTargets(clearParam);
+  for (const tag of targets) {
+    await revalidateTag(tag);
   }
 
   const enriched = {
@@ -58,7 +58,7 @@ async function handle(payload: TestPayload, clearParam: string | null) {
 
   return {
     ok: true,
-    cleared: clearTargets,
+    revalidated: targets,
     pushed: pushResult,
     event: enriched,
   };
