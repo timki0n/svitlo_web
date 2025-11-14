@@ -2,12 +2,19 @@ import { revalidateTag } from "next/cache";
 import { NextResponse } from "next/server";
 import { broadcast } from "@/lib/events";
 import { sendPushToAll } from "@/lib/push";
+import {
+  REMINDER_LEAD_MINUTES,
+  type PushCategory,
+  type ReminderLeadMinutes,
+} from "@/lib/notificationPreferences";
 
 type TestPayload = {
   type?: string;
   title?: string;
   body?: string;
-  data?: unknown;
+  data?: Record<string, unknown>;
+  category?: PushCategory;
+  reminderLeadMinutes?: number;
 };
 
 const TEST_MODE = process.env.NOTIFY_TEST_MODE === "1";
@@ -38,7 +45,7 @@ function resolveRevalidateTargets(clearParam: string | null): string[] {
 async function handle(payload: TestPayload, clearParam: string | null) {
   const targets = resolveRevalidateTargets(clearParam);
   for (const tag of targets) {
-    await revalidateTag(tag);
+    await revalidateTag(tag, "notify-test");
   }
 
   const enriched = {
@@ -46,6 +53,8 @@ async function handle(payload: TestPayload, clearParam: string | null) {
     title: payload.title || "Тестова нотифікація",
     body: payload.body || "Це тестове повідомлення від 4U Світло",
     data: payload.data ?? {},
+    category: payload.category,
+    reminderLeadMinutes: normalizeReminderLead(payload.reminderLeadMinutes),
   };
 
   broadcast(enriched);
@@ -53,7 +62,14 @@ async function handle(payload: TestPayload, clearParam: string | null) {
   const pushResult = await sendPushToAll({
     title: enriched.title!,
     body: enriched.body!,
-    data: { ...(enriched.data as any), type: enriched.type },
+    data: {
+      ...(enriched.data as Record<string, unknown>),
+      type: enriched.type,
+      category: enriched.category,
+      reminderLeadMinutes: enriched.reminderLeadMinutes ?? undefined,
+    },
+    category: enriched.category,
+    reminderLeadMinutes: enriched.reminderLeadMinutes ?? undefined,
   });
 
   return {
@@ -76,6 +92,15 @@ export async function GET(req: Request) {
 
   const result = await handle({ type, title, body }, clear);
   return NextResponse.json(result);
+}
+
+function normalizeReminderLead(value: number | undefined): ReminderLeadMinutes | undefined {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return undefined;
+  }
+  return REMINDER_LEAD_MINUTES.includes(value as ReminderLeadMinutes)
+    ? (value as ReminderLeadMinutes)
+    : undefined;
 }
 
 export async function POST(req: Request) {

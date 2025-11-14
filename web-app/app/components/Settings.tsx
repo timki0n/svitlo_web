@@ -5,8 +5,9 @@ import { createPortal } from "react-dom";
 
 import { usePushSubscription } from "@/app/components/hooks/usePushSubscription";
 import { useTheme } from "@/app/components/ThemeProvider";
+import type { ReminderLeadMinutes } from "@/lib/notificationPreferences";
 
-export default function NotificationToggleIcon() {
+export default function Settings() {
   const [mounted, setMounted] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
   const push = usePushSubscription();
@@ -38,6 +39,7 @@ export default function NotificationToggleIcon() {
           onToggle: () => {
             void push.toggle();
           },
+          preferences: push.preferences,
         }}
         theme={{
           value: theme.theme,
@@ -81,6 +83,7 @@ type SettingsModalProps = {
     canEnable: boolean;
     ready: boolean;
     onToggle: () => void;
+    preferences: ReturnType<typeof usePushSubscription>["preferences"];
   };
   theme: {
     value: "light" | "dark";
@@ -142,6 +145,9 @@ function SettingsModal({ isOpen, onClose, notification, theme }: SettingsModalPr
             tooltip={notifTooltip}
             onChange={notification.onToggle}
           />
+          {notification.subscribed ? (
+            <NotificationPreferencesSection state={notification.preferences} />
+          ) : null}
 
           <SettingsToggle
             label="Темна тема"
@@ -156,6 +162,127 @@ function SettingsModal({ isOpen, onClose, notification, theme }: SettingsModalPr
   );
 
   return createPortal(modal, document.body);
+}
+
+type NotificationPreferencesSectionProps = {
+  state: ReturnType<typeof usePushSubscription>["preferences"];
+};
+
+function NotificationPreferencesSection({ state }: NotificationPreferencesSectionProps) {
+  const { value, loading, saving, error, leadOptions, update } = state;
+  const disabled = loading || saving;
+  const statusMessage = error ?? (saving ? "Зберігаємо…" : loading ? "Завантаження..." : null);
+  const handleToggle = (key: "actualEvents" | "scheduleChanges") => {
+    if (key === "actualEvents") {
+      void update({ actualEvents: !value.actualEvents });
+    } else {
+      void update({ scheduleChanges: !value.scheduleChanges });
+    }
+  };
+  const handleReminderToggle = () => {
+    if (value.reminders.enabled) {
+      void update({ reminders: { enabled: false } });
+      return;
+    }
+    if (value.reminders.leadMinutes.length === 0 && leadOptions.length > 0) {
+      void update({
+        reminders: {
+          enabled: true,
+          leadMinutes: [leadOptions[0]],
+        },
+      });
+      return;
+    }
+    void update({ reminders: { enabled: true } });
+  };
+  const handleLeadToggle = (minutes: ReminderLeadMinutes) => {
+    const current = new Set<ReminderLeadMinutes>(value.reminders.leadMinutes);
+    if (current.has(minutes)) {
+      current.delete(minutes);
+    } else {
+      current.add(minutes);
+    }
+    void update({
+      reminders: {
+        leadMinutes: Array.from(current).sort((a, b) => a - b),
+      },
+    });
+  };
+
+  return (
+    <div className="flex flex-col gap-2 py-3">
+      <p className="text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+        Налаштування сповіщень
+      </p>
+      <SettingsToggle
+        label="Фактичні відключення"
+        description="Сповіщати про реальні включення/відключення"
+        checked={value.actualEvents}
+        disabled={disabled}
+        onChange={() => handleToggle("actualEvents")}
+      />
+      <SettingsToggle
+        label="Зміни графіка"
+        description="Сповіщати, коли DTEK оновлює розклад"
+        checked={value.scheduleChanges}
+        disabled={disabled}
+        onChange={() => handleToggle("scheduleChanges")}
+      />
+      <SettingsToggle
+        label="Нагадування"
+        description="Нагадування про планові відключення/включення"
+        checked={value.reminders.enabled}
+        disabled={disabled}
+        onChange={handleReminderToggle}
+      />
+      {value.reminders.enabled ? (
+        <div className="flex flex-col gap-1 rounded-lg border border-emerald-200/60 bg-emerald-50/50 p-3 text-xs text-emerald-900 dark:border-emerald-500/40 dark:bg-emerald-900/20 dark:text-emerald-100">
+          <span className="text-[11px] uppercase tracking-wide text-emerald-700 dark:text-emerald-200">
+            Таймінг нагадувань
+          </span>
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+            {leadOptions.map((minutes) => {
+              const active = value.reminders.leadMinutes.includes(minutes);
+              return (
+                <button
+                  key={minutes}
+                  type="button"
+                  aria-pressed={active}
+                  disabled={disabled}
+                  onClick={() => handleLeadToggle(minutes)}
+                  className={`w-full rounded-full border px-3 py-1.5 text-sm transition ${
+                    active
+                      ? "border-emerald-500 bg-emerald-500 text-white dark:border-emerald-400 dark:bg-emerald-400 dark:text-emerald-950"
+                      : "border-emerald-600/50 text-emerald-800 hover:bg-emerald-100 dark:border-emerald-300/50 dark:text-emerald-100 dark:hover:bg-emerald-800/30"
+                  } disabled:cursor-not-allowed disabled:opacity-60`}
+                >
+                  {formatLeadLabel(minutes)}
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-[11px] text-emerald-800/80 dark:text-emerald-100/80">
+            Можна обрати кілька інтервалів. Нагадування будуть оновлювати сповіщення, а не додавати нове.
+          </p>
+        </div>
+      ) : null}
+      <div className="min-h-5 text-xs">
+        {statusMessage ? (
+          <span className={error ? "text-red-500 dark:text-red-400" : "text-zinc-500 dark:text-zinc-400"}>
+            {statusMessage}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function formatLeadLabel(minutes: number) {
+  if (minutes >= 60 && minutes % 60 === 0) {
+    const hours = minutes / 60;
+    return hours === 1 ? "1 год" : `${hours} год`;
+  }
+  return `${minutes} хв`;
 }
 
 type SettingsToggleProps = {
@@ -215,3 +342,5 @@ function SettingsToggle({
     </div>
   );
 }
+
+

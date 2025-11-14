@@ -2,12 +2,16 @@ import { revalidateTag } from "next/cache";
 import { NextResponse } from "next/server";
 import { broadcast } from "@/lib/events";
 import { sendPushToAll } from "@/lib/push";
+import type { PushCategory, ReminderLeadMinutes } from "@/lib/notificationPreferences";
+import { REMINDER_LEAD_MINUTES } from "@/lib/notificationPreferences";
 
 type NotifyPayload = {
-  type: "schedule_updated" | "power_outage_started" | "power_restored" | "custom";
+  type: "schedule_updated" | "power_outage_started" | "power_restored" | "custom" | "reminder";
   title?: string;
   body?: string;
-  data?: unknown;
+  data?: Record<string, unknown>;
+  category?: PushCategory;
+  reminderLeadMinutes?: number;
 };
 
 const TOKEN = process.env.NOTIFY_BOT_TOKEN || "";
@@ -43,7 +47,7 @@ export async function POST(req: Request) {
   await Promise.all(
     Array.from(tagsToRevalidate).map(async (tag) => {
       try {
-        await revalidateTag(tag);
+        await revalidateTag(tag, "notify-api");
       } catch (error) {
         console.error("revalidateTag error", tag, error);
       }
@@ -53,12 +57,22 @@ export async function POST(req: Request) {
   // Broadcast to active tabs
   broadcast(payload);
 
+  const category = resolveCategory(payload);
+  const reminderLeadMinutes = normalizeReminderLead(payload.reminderLeadMinutes);
+
   // Send Web Push notifications (best-effort)
   try {
     await sendPushToAll({
       title: payload.title ?? "4U Світло",
       body: payload.body ?? "",
-      data: { ...(payload.data ?? {}), type: payload.type },
+      data: {
+        ...(payload.data ?? {}),
+        type: payload.type,
+        category,
+        reminderLeadMinutes: reminderLeadMinutes ?? undefined,
+      },
+      category,
+      reminderLeadMinutes: reminderLeadMinutes ?? undefined,
     });
   } catch (error) {
     // do not fail the request if push sending fails
@@ -67,5 +81,32 @@ export async function POST(req: Request) {
 
   return NextResponse.json({ ok: true });
 }
+
+function resolveCategory(payload: NotifyPayload): PushCategory | undefined {
+  if (payload.category) {
+    return payload.category;
+  }
+  switch (payload.type) {
+    case "power_outage_started":
+    case "power_restored":
+      return "actual";
+    case "schedule_updated":
+      return "schedule_change";
+    case "reminder":
+      return "reminder";
+    default:
+      return undefined;
+  }
+}
+
+function normalizeReminderLead(value: number | undefined): ReminderLeadMinutes | undefined {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return undefined;
+  }
+  return REMINDER_LEAD_MINUTES.includes(value as ReminderLeadMinutes)
+    ? (value as ReminderLeadMinutes)
+    : undefined;
+}
+
 
 

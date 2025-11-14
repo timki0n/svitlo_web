@@ -1,6 +1,6 @@
 import { ScheduleChartSection } from "./ScheduleChartSection";
 import { PowerStatusGauge, type GaugeVisualState } from "./PowerStatusGauge";
-import NotificationToggleIcon from "./NotificationToggleIcon";
+import Settings from "./Settings";
 import type { WeekForChart } from "./scheduleTypes";
 
 export type PowerStatus = {
@@ -48,7 +48,7 @@ export function OutageDashboard({ weeks, status }: OutageDashboardProps) {
       <div
         className={`relative overflow-hidden rounded-2xl border text-center transition ${toneClassName} ${shadowClassName}`}
       >
-        <NotificationToggleIcon />
+        <Settings />
         <div
           className="pointer-events-none absolute inset-[-20%] z-0 md:animate-pulse blur-3xl"
           style={{

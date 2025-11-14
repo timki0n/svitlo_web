@@ -7,9 +7,10 @@ import contextlib
 import json
 import urllib.request
 import urllib.error
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from typing import Final
+from typing import Final, Literal
 
 from aiogram import Bot, Dispatcher, Router, types
 from aiogram.types import Message
@@ -68,6 +69,10 @@ last_today_signature: tuple | None = None
 last_tomorrow_status: str | None = None
 last_today_date = None
 last_tomorrow_date = None
+REMINDER_LEADS: Final[tuple[int, ...]] = (10, 20, 30, 60)
+REMINDER_TRIGGER_WINDOW_SEC = 45
+REMINDER_HISTORY_TTL_SEC = 6 * 3600
+reminder_history: dict[str, float] = {}
 
 # ───────────────── helpers ─────────────────
 def fmt_dt(ts: float) -> str:
@@ -134,6 +139,85 @@ def build_today_signature(outages_info: dict) -> tuple:
     raw_slots = outages_info.get("raw_slots") or []
     slots_signature = tuple((slot.start_min, slot.end_min, slot.type) for slot in raw_slots)
     return date_iso, status, slots_signature
+
+
+@dataclass(frozen=True)
+class ReminderEvent:
+    kind: Literal["outage", "restore"]
+    lead_minutes: int
+    trigger_at: datetime
+    start: datetime
+    end: datetime
+
+    @property
+    def duration_minutes(self) -> int:
+        seconds = max(0, (self.end - self.start).total_seconds())
+        return max(1, int(round(seconds / 60)))
+
+
+def _load_schedule_bundle() -> tuple[dict, dict]:
+    data = yasno.fetch()
+    today = yasno.get_today_outages(data)
+    tomorrow = yasno.get_tomorrow_outages(data)
+    return today, tomorrow
+
+
+def _extract_plan_segments(*day_infos: dict) -> list[tuple[datetime, datetime]]:
+    segments: list[tuple[datetime, datetime]] = []
+    for info in day_infos:
+        if not info or info.get("status") != "ScheduleApplies":
+            continue
+        date_value = info.get("date")
+        if not date_value:
+            continue
+        raw_slots = info.get("raw_slots") or []
+        for slot in raw_slots:
+            if not getattr(slot, "is_outage", False):
+                continue
+            start_dt, end_dt = slot.as_time_range(date_value, TZ)
+            if end_dt <= start_dt:
+                continue
+            segments.append((start_dt, end_dt))
+    return segments
+
+
+def _build_reminder_events(segments: list[tuple[datetime, datetime]], now: datetime) -> list[ReminderEvent]:
+    events: list[ReminderEvent] = []
+    tolerance = timedelta(seconds=REMINDER_TRIGGER_WINDOW_SEC)
+    for start_dt, end_dt in segments:
+        if end_dt <= now:
+            continue
+        for lead in REMINDER_LEADS:
+            trigger_outage = start_dt - timedelta(minutes=lead)
+            if trigger_outage + tolerance >= now:
+                events.append(
+                    ReminderEvent(
+                        kind="outage",
+                        lead_minutes=lead,
+                        trigger_at=trigger_outage,
+                        start=start_dt,
+                        end=end_dt,
+                    )
+                )
+            trigger_restore = end_dt - timedelta(minutes=lead)
+            if trigger_restore + tolerance >= now:
+                events.append(
+                    ReminderEvent(
+                        kind="restore",
+                        lead_minutes=lead,
+                        trigger_at=trigger_restore,
+                        start=start_dt,
+                        end=end_dt,
+                    )
+                )
+    return events
+
+
+def _format_lead_label(minutes: int) -> str:
+    if minutes >= 60 and minutes % 60 == 0:
+        hours = minutes // 60
+        return f"{hours} год" if hours > 1 else "1 год"
+    return f"{minutes} хв"
 
 
 async def notify(bot: Bot, text: str):
@@ -374,6 +458,7 @@ async def schedule_monitor(bot: Bot):
                 await notify(bot, f"🔔 Графік на сьогодні оновлено!\n\n{message_body}")
                 asyncio.create_task(web_notify({
                     "type": "schedule_updated",
+                    "category": "schedule_change",
                     "title": "🔔 Графік на сьогодні оновлено!",
                     "body": message_body,
                 }))
@@ -426,6 +511,7 @@ async def schedule_monitor_tomorrow(bot: Bot):
                 await notify(bot, f"🔔 З'явився графік на завтра!\n\n{message_body}")
                 asyncio.create_task(web_notify({
                     "type": "schedule_updated",
+                    "category": "schedule_change",
                     "title": "🔔 З'явився графік на завтра!",
                     "body": message_body,
                 }))
@@ -436,6 +522,88 @@ async def schedule_monitor_tomorrow(bot: Bot):
         except Exception:
             logging.exception("Schedule monitor tomorrow error")
             await asyncio.sleep(SCHEDULE_POLL_INTERVAL_SEC)
+
+
+async def reminder_scheduler(bot: Bot):
+    while True:
+        try:
+            now = datetime.now(TZ)
+            now_ts = now.timestamp()
+            power_down = listener.seconds_since_last_packet() > threshold_sec
+
+            try:
+                today_info, tomorrow_info = await asyncio.to_thread(_load_schedule_bundle)
+            except Exception as fetch_error:
+                logging.error("Reminder scheduler fetch error: %s", fetch_error)
+                await asyncio.sleep(20.0)
+                continue
+
+            segments = _extract_plan_segments(today_info, tomorrow_info)
+            if not segments:
+                _prune_reminder_history(now_ts)
+                await asyncio.sleep(30.0)
+                continue
+
+            events = _build_reminder_events(segments, now)
+            for event in events:
+                key = f"{event.kind}:{event.start.isoformat()}:{event.lead_minutes}"
+                if key in reminder_history:
+                    continue
+                delta = (now - event.trigger_at).total_seconds()
+                if delta < 0 or delta > REMINDER_TRIGGER_WINDOW_SEC:
+                    continue
+                if (event.kind == "outage" and power_down) or (event.kind == "restore" and not power_down):
+                    reminder_history[key] = now_ts
+                    continue
+
+                await send_plan_reminder(event, power_down)
+                reminder_history[key] = now_ts
+
+            _prune_reminder_history(now_ts)
+            await asyncio.sleep(20.0)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logging.exception("Reminder scheduler error")
+            await asyncio.sleep(20.0)
+
+
+async def send_plan_reminder(event: ReminderEvent, power_down: bool):
+    lead_label = _format_lead_label(event.lead_minutes)
+    if event.kind == "outage":
+        title = f"⏳ Відключення за {lead_label}"
+        fallback_body = f"Світло є, але за {lead_label} почнеться планове відключення."
+    else:
+        title = f"⏳ Відновлення за {lead_label}"
+        fallback_body = f"Світла немає, але за {lead_label} має відновитися згідно графіка."
+
+    await web_notify({
+        "type": "reminder",
+        "category": "reminder",
+        "title": title,
+        "body": fallback_body,
+        "reminderLeadMinutes": event.lead_minutes,
+        "data": {
+            "networkState": "off" if power_down else "on",
+            "tag": "power-status",
+            "reminder": {
+                "kind": event.kind,
+                "leadMinutes": event.lead_minutes,
+                "startISO": event.start.isoformat(),
+                "endISO": event.end.isoformat(),
+                "durationMinutes": event.duration_minutes,
+            },
+        },
+    })
+
+
+def _prune_reminder_history(now_ts: float):
+    stale_keys = [
+        key for key, ts in reminder_history.items() if (now_ts - ts) > REMINDER_HISTORY_TTL_SEC
+    ]
+    for key in stale_keys:
+        reminder_history.pop(key, None)
+
 
 async def power_monitor(bot: Bot):
     """
@@ -474,16 +642,27 @@ async def power_monitor(bot: Bot):
                         )
                         asyncio.create_task(web_notify({
                             "type": "power_outage_started",
-                            "title": "Світло зникло",
+                            "category": "actual",
+                            "title": "⚠️ Світло зникло",
                             "body": restore_msg,
+                            "data": {
+                                "networkState": "off",
+                                "tag": "power-status",
+                                "planMessage": restore_msg,
+                            },
                         }))
                     except Exception as e:
                         logging.error("Failed to get restore message: %s", e)
                         await notify(bot, "⚠️ Світло ЗНИКЛО.")
                         asyncio.create_task(web_notify({
                             "type": "power_outage_started",
+                            "category": "actual",
                             "title": "Світло зникло",
                             "body": "",
+                            "data": {
+                                "networkState": "off",
+                                "tag": "power-status",
+                            },
                         }))
             else:
                 if active_outage is not None and secs != float("inf"):
@@ -506,8 +685,15 @@ async def power_monitor(bot: Bot):
                     await notify(bot, message_text)
                     asyncio.create_task(web_notify({
                         "type": "power_restored",
+                        "category": "actual",
                         "title": "✅ Світло ВІДНОВЛЕНО.",
                         "body": "\n".join(body_lines[1:]) if nearest_msg else body_lines[1],
+                        "data": {
+                            "networkState": "on",
+                            "tag": "power-status",
+                            "downtimeSeconds": downtime,
+                            "planMessage": nearest_msg,
+                        },
                     }))
             await asyncio.sleep(1.0)
         except asyncio.CancelledError:
@@ -540,11 +726,13 @@ async def on_startup(dispatcher: Dispatcher, bot: Bot):
 
     schedule_tomorrow_task = asyncio.create_task(schedule_monitor_tomorrow(bot))
     dispatcher.workflow_data["schedule_tomorrow_task"] = schedule_tomorrow_task
+    reminder_task = asyncio.create_task(reminder_scheduler(bot))
+    dispatcher.workflow_data["reminder_task"] = reminder_task
     print("[startup] UDP listener started, monitor and schedule tasks running")
 
 async def on_shutdown(dispatcher: Dispatcher, bot: Bot):
     # акуратно гасимо фоновий таск монітора
-    for key in ("monitor_task", "schedule_task", "schedule_tomorrow_task"):
+    for key in ("monitor_task", "schedule_task", "schedule_tomorrow_task", "reminder_task"):
         task = dispatcher.workflow_data.get(key)
         if task:
             task.cancel()
