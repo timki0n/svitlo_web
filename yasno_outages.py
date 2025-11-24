@@ -237,6 +237,9 @@ class YasnoOutages:
         # Перевіряємо доступність розкладу
         today_status = today_block.get("status", "")
         tomorrow_status = tomorrow_block.get("status", "")
+
+        if today_status == "EmergencyShutdowns":
+            return "🚨 Діють екстрені відключення. Графік не діє."
         
         # Якщо обидва дні мають статус, не "ScheduleApplies" — розклад недоступний
         if today_status != "ScheduleApplies" and tomorrow_status != "ScheduleApplies":
