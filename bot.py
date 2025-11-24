@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import shlex
 import asyncio
 from asyncio.subprocess import PIPE
 import logging
@@ -412,7 +413,6 @@ async def create_schedule_screenshot(outages_info: dict, scope: Literal["today",
         return None
 
     python_exec = Path(TIMELINE_SCREENSHOT_PYTHON)
-    print("python_exec: " + str(python_exec))
     if not python_exec.exists():
         logging.error("Інтерпретатор для скріншоту не знайдено: %s", python_exec)
         return None
@@ -434,6 +434,16 @@ async def create_schedule_screenshot(outages_info: dict, scope: Literal["today",
     ]
     if TIMELINE_SCREENSHOT_BASE_URL:
         cmd.extend(["--base-url", TIMELINE_SCREENSHOT_BASE_URL])
+
+    cmd_display = shlex.join(cmd)
+    logging.debug(
+        "Screenshot run: python=%s script=%s scope=%s output=%s cmd=%s",
+        python_exec,
+        script_path,
+        scope,
+        output_path,
+        cmd_display,
+    )
 
     try:
         process = await asyncio.create_subprocess_exec(*cmd, stdout=PIPE, stderr=PIPE)
