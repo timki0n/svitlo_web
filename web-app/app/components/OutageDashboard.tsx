@@ -2,6 +2,7 @@ import { ScheduleChartSection } from "./ScheduleChartSection";
 import { PowerStatusGauge, type GaugeVisualState } from "./PowerStatusGauge";
 import Settings from "./Settings";
 import type { WeekForChart } from "./scheduleTypes";
+import { SnakeDayTimeline, type SnakeTimelineData } from "./SnakeDayTimeline";
 
 export type PowerStatus = {
   tone: "ok" | "warning";
@@ -40,6 +41,7 @@ export function OutageDashboard({ weeks, status }: OutageDashboardProps) {
   const durationLabel = since ? formatElapsedDuration(since, now) : null;
   const durationPrefix = status.tone === "ok" ? "Світло є вже" : "Відключення триває";
   const planSummary = resolvePlanSummary(weeks, now);
+  const snakeTimeline = resolveSnakeTimeline(weeks, now);
   const gaugeData = resolveGaugeState(weeks, status, now);
   const shouldShowDurationLine = durationLabel && gaugeData.variant === "none";
 
@@ -81,6 +83,10 @@ export function OutageDashboard({ weeks, status }: OutageDashboardProps) {
             <PlanSummaryBlock summary={planSummary} now={now} />
           </div>
         </div>
+      </div>
+
+      <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+        <SnakeDayTimeline data={snakeTimeline} />
       </div>
 
       <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
@@ -635,6 +641,201 @@ function mergeAcrossDays(segments: NormalisedPlanSegment[]): NormalisedPlanSegme
   }
 
   return merged;
+}
+
+type SnakePlanSegment = {
+  startHour: number;
+  endHour: number;
+};
+
+function resolveSnakeTimeline(weeks: WeekForChart[], now: Date): SnakeTimelineData {
+  const nowHour = getHourFraction(now);
+  const dayByKey = new Map(weeks.flatMap((week) => week.days).map((day) => [day.key, day]));
+  const todayKey = formatDateKey(now);
+  const currentDay = dayByKey.get(todayKey) ?? null;
+  const planSegments = currentDay ? normalisePlanSegments(currentDay.segments) : [];
+  const slots = buildSnakeSlots(planSegments);
+  const dayLabel = currentDay?.title ?? formatReadableDayLabel(now);
+  const dateLabel = formatCalendarDate(currentDay?.dateISO ?? now.toISOString());
+  const status = currentDay?.status ?? null;
+  const hasPlanSegments = planSegments.length > 0;
+  const isPlaceholder = currentDay ? Boolean(currentDay.isPlaceholder) : true;
+  const plannedHours = currentDay?.plannedHours ?? 0;
+  const actualHours = currentDay?.actualHours ?? 0;
+  const outageHours = clampDurationHours(actualHours);
+  const lightHours = Math.max(0, 24 - outageHours);
+  const diffHours = plannedHours - actualHours;
+  const hasActualData = currentDay ? currentDay.segments.some((segment) => segment.source === "actual") : false;
+
+  return {
+    slots,
+    dayLabel,
+    dateLabel,
+    nowHour,
+    status,
+    hasPlanSegments,
+    isPlaceholder,
+    currentTimeLabel: formatTime(now),
+    summary: {
+      plannedHours,
+      actualHours,
+      outageHours,
+      lightHours,
+      diffHours,
+      hasActualData,
+    },
+  };
+}
+
+function normalisePlanSegments(segments: WeekForChart["days"][number]["segments"]): SnakePlanSegment[] {
+  return segments
+    .filter((segment) => segment.source === "plan")
+    .map((segment) => {
+      const startHour = clampHour(segment.startHour);
+      let endHour = clampHour(segment.endHour);
+
+      if (endHour <= startHour) {
+        endHour = 24;
+      }
+
+      return { startHour, endHour };
+    })
+    .filter((segment) => segment.endHour > segment.startHour);
+}
+
+function buildSnakeSlots(planSegments: SnakePlanSegment[]) {
+  const SLOT_DURATION = 1;
+  const TOTAL_SLOTS = 24;
+
+  return Array.from({ length: TOTAL_SLOTS }).map((_, index) => {
+    const startHour = index * SLOT_DURATION;
+    const endHour = startHour + SLOT_DURATION;
+
+    const overlaps = planSegments
+      .map((segment) => {
+        const overlapStart = Math.max(segment.startHour, startHour);
+        const overlapEnd = Math.min(segment.endHour, endHour);
+
+        if (overlapEnd <= overlapStart) {
+          return null;
+        }
+
+        return { start: overlapStart, end: overlapEnd };
+      })
+      .filter((value): value is { start: number; end: number } => value !== null);
+
+    if (overlaps.length === 0) {
+      return {
+        index,
+        startHour,
+        endHour,
+        fillRatio: 0,
+        fillStartRatio: 0,
+      };
+    }
+
+    const coverageStart = overlaps.reduce((min, range) => Math.min(min, range.start), overlaps[0].start);
+    const coverageEnd = overlaps.reduce((max, range) => Math.max(max, range.end), overlaps[0].end);
+
+    const rawStartRatio = (coverageStart - startHour) / SLOT_DURATION;
+    const rawEndRatio = (coverageEnd - startHour) / SLOT_DURATION;
+    const fillStartRatio = clampRatio(rawStartRatio);
+    const fillEndRatio = clampRatio(rawEndRatio);
+    const fillRatio = clampRatio(fillEndRatio - fillStartRatio);
+
+    return {
+      index,
+      startHour,
+      endHour,
+      fillRatio,
+      fillStartRatio,
+    };
+  });
+}
+
+function getHourFraction(date: Date) {
+  return date.getHours() + date.getMinutes() / 60 + date.getSeconds() / 3600;
+}
+
+function formatReadableDayLabel(date: Date) {
+  const weekday = new Intl.DateTimeFormat("uk-UA", {
+    weekday: "long",
+  })
+    .format(date)
+    .replace(".", "");
+  const capitalisedWeekday = weekday ? `${weekday.charAt(0).toUpperCase()}${weekday.slice(1)}` : "";
+  const dayMonth = new Intl.DateTimeFormat("uk-UA", {
+    day: "2-digit",
+    month: "2-digit",
+  }).format(date);
+
+  return `${capitalisedWeekday} (${dayMonth})`;
+}
+
+function formatCalendarDate(isoString: string | null) {
+  if (!isoString) {
+    return "";
+  }
+
+  const parsed = new Date(isoString);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+
+  return new Intl.DateTimeFormat("uk-UA", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(parsed);
+}
+
+function clampHour(value: number) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  if (value < 0) {
+    return 0;
+  }
+
+  if (value > 24) {
+    return 24;
+  }
+
+  return value;
+}
+
+function clampRatio(value: number) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  if (value < 0) {
+    return 0;
+  }
+
+  if (value > 1) {
+    return 1;
+  }
+
+  return value;
+}
+
+function clampDurationHours(value: number) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  if (value < 0) {
+    return 0;
+  }
+
+  if (value > 24) {
+    return 24;
+  }
+
+  return value;
 }
 
 

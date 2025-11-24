@@ -16,6 +16,40 @@ Bot side:
 
 - WEB_NOTIFY_URL — e.g. http://127.0.0.1:3000/api/notify
 - NOTIFY_BOT_TOKEN — same as server NOTIFY_BOT_TOKEN
+- TIMELINE_SCREENSHOT_SCRIPT — optional override for `scripts/render_timeline_screenshot.py`
+- TIMELINE_SCREENSHOT_BASE_URL — base URL of the Next.js app (default http://127.0.0.1:3000)
+- TIMELINE_SCREENSHOT_ENABLED — set to `0`/`false` to disable screenshot generation
+
+## Timeline screenshot workflow
+
+- `app/timeline/screenshot/page.tsx` рендерить компонент `SnakeDayTimeline` без додаткового оточення. Сторінка очікує query-параметр `data`, який містить base64 (URL-safe) рядок із JSON у форматі `SnakeTimelineData`.
+- JSON можна зібрати на стороні бота та передати напряму через URL: `/timeline/screenshot?data=<base64>`.
+- Для ручного тесту:
+
+  ```bash
+  python - <<'EOF'
+  import base64, json
+  payload = json.dumps({"slots": []}).encode()
+  encoded = base64.urlsafe_b64encode(payload).decode()
+  print(encoded)
+  EOF
+
+  # відкрийте http://127.0.0.1:3000/timeline/screenshot?data=<encoded>
+  ```
+
+- Скрипт `scripts/render_timeline_screenshot.py` запускає Playwright (Chromium headless), відкриває сторінку і робить скріншот контейнера `[data-test=snake-day-timeline-ready]`.
+  - Вимоги: `pip install playwright`, далі `playwright install chromium`.
+  - Використання:
+
+    ```bash
+    python scripts/render_timeline_screenshot.py \
+      --json-file schedule.json \
+      --output out/schedule.png \
+      --base-url http://127.0.0.1:3000
+    ```
+
+  - Доступні також параметри `--json "<inline JSON>"`, `--viewport-width`, `--viewport-height`, `--full-page` тощо.
+- `bot.py` викликає скрипт автоматично при оновленні графіка (сьогодні/завтра), передає свіжий JSON та публікує скріншот разом із Telegram-повідомленням. Шляхи/URL можна перевизначити змінними середовища (див. вище).
 
 ## Getting Started
 

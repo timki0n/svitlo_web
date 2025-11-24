@@ -1,14 +1,18 @@
 import os
 import re
+import sys
 import asyncio
+from asyncio.subprocess import PIPE
 import logging
 import time
+import tempfile
 import contextlib
 import json
 import urllib.request
 import urllib.error
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 from typing import Final, Literal
 
@@ -56,6 +60,10 @@ DEFAULT_THRESHOLD_SEC = float(os.getenv("THRESHOLD_SEC", "6"))
 SCHEDULE_POLL_INTERVAL_SEC = 60
 WEB_NOTIFY_URL = os.getenv("WEB_NOTIFY_URL", "http://127.0.0.1:3000/api/notify")
 NOTIFY_BOT_TOKEN = os.getenv("NOTIFY_BOT_TOKEN", "")
+DEFAULT_SCREENSHOT_SCRIPT = Path(__file__).with_name("scripts").joinpath("render_timeline_screenshot.py")
+TIMELINE_SCREENSHOT_SCRIPT = Path(os.getenv("TIMELINE_SCREENSHOT_SCRIPT", str(DEFAULT_SCREENSHOT_SCRIPT)))
+TIMELINE_SCREENSHOT_BASE_URL = os.getenv("TIMELINE_SCREENSHOT_BASE_URL", "http://127.0.0.1:3000")
+TIMELINE_SCREENSHOT_ENABLED = os.getenv("TIMELINE_SCREENSHOT_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
 
 TZ = ZoneInfo("Europe/Kyiv")
 
@@ -252,15 +260,232 @@ def _format_lead_label(minutes: int) -> str:
     return f"{minutes} хв"
 
 
-async def notify(bot: Bot, text: str):
+WEEKDAY_NAMES_UA = ("Понеділок", "Вівторок", "Середа", "Четвер", "Пʼятниця", "Субота", "Неділя")
+
+
+def _build_timeline_payload(outages_info: dict, scope: Literal["today", "tomorrow"]) -> dict | None:
+    status = outages_info.get("status")
+    if status != "ScheduleApplies":
+        return None
+
+    date_value = outages_info.get("date")
+    if isinstance(date_value, datetime):
+        day_date = date_value.date()
+    else:
+        day_date = date_value or datetime.now(TZ).date()
+
+    raw_slots = outages_info.get("raw_slots") or []
+    plan_segments = _normalise_plan_segments(raw_slots)
+    now = datetime.now(TZ)
+    show_current_time = scope == "today"
+    has_plan_segments = bool(plan_segments)
+    summary = _build_timeline_summary(plan_segments)
+
+    day_label = _format_timeline_day_label(day_date)
+    context_label = "Сьогодні" if scope == "today" else "Завтра"
+    if scope == "tomorrow":
+        day_label = f"Завтра · {day_label}"
+
+    return {
+        "slots": _build_snake_slots(plan_segments),
+        "dayLabel": day_label,
+        "dateLabel": day_date.strftime("%d.%m.%Y"),
+        "nowHour": _hour_fraction(now) if show_current_time else -1,
+        "status": status,
+        "hasPlanSegments": has_plan_segments,
+        "isPlaceholder": not has_plan_segments,
+        "currentTimeLabel": now.strftime("%H:%M") if show_current_time else "—:—",
+        "summary": summary,
+        "contextLabel": context_label,
+        "showCurrentTimeIndicator": show_current_time,
+    }
+
+
+def _normalise_plan_segments(raw_slots) -> list[tuple[float, float]]:
+    segments: list[tuple[float, float]] = []
+    for slot in raw_slots:
+        if not getattr(slot, "is_outage", False):
+            continue
+        start_min = getattr(slot, "start_min", None)
+        end_min = getattr(slot, "end_min", None)
+        if start_min is None or end_min is None:
+            continue
+        start_hour = _clamp(float(start_min) / 60.0, 0.0, 24.0)
+        end_hour = _clamp(float(end_min) / 60.0, 0.0, 24.0)
+        if end_hour <= start_hour:
+            continue
+        segments.append((start_hour, end_hour))
+    return _merge_segments(segments)
+
+
+def _build_snake_slots(plan_segments: list[tuple[float, float]]) -> list[dict[str, float]]:
+    slots: list[dict[str, float]] = []
+    for index in range(24):
+        start_hour = float(index)
+        end_hour = start_hour + 1.0
+        overlaps: list[tuple[float, float]] = []
+        for segment_start, segment_end in plan_segments:
+            overlap_start = max(segment_start, start_hour)
+            overlap_end = min(segment_end, end_hour)
+            if overlap_end <= overlap_start:
+                continue
+            overlaps.append((overlap_start, overlap_end))
+
+        if overlaps:
+            coverage_start = min(start for start, _ in overlaps)
+            coverage_end = max(end for _, end in overlaps)
+            fill_start_ratio = _clamp(coverage_start - start_hour, 0.0, 1.0)
+            fill_end_ratio = _clamp(coverage_end - start_hour, 0.0, 1.0)
+            fill_ratio = _clamp(fill_end_ratio - fill_start_ratio, 0.0, 1.0)
+        else:
+            fill_start_ratio = 0.0
+            fill_ratio = 0.0
+
+        slots.append(
+            {
+                "index": index,
+                "startHour": start_hour,
+                "endHour": end_hour,
+                "fillRatio": fill_ratio,
+                "fillStartRatio": fill_start_ratio,
+            }
+        )
+
+    return slots
+
+
+def _build_timeline_summary(plan_segments: list[tuple[float, float]]) -> dict:
+    total_hours = 0.0
+    for start_hour, end_hour in plan_segments:
+        total_hours += max(0.0, end_hour - start_hour)
+    total_hours = _clamp(total_hours, 0.0, 24.0)
+    light_hours = _clamp(24.0 - total_hours, 0.0, 24.0)
+    return {
+        "plannedHours": total_hours,
+        "actualHours": total_hours,
+        "outageHours": total_hours,
+        "lightHours": light_hours,
+        "diffHours": 0.0,
+        "hasActualData": bool(plan_segments),
+    }
+
+
+def _merge_segments(segments: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    if not segments:
+        return []
+    sorted_segments = sorted(segments, key=lambda item: item[0])
+    merged: list[list[float]] = [[sorted_segments[0][0], sorted_segments[0][1]]]
+    for start_hour, end_hour in sorted_segments[1:]:
+        last_start, last_end = merged[-1]
+        if start_hour <= last_end:
+            merged[-1][1] = max(last_end, end_hour)
+        else:
+            merged.append([start_hour, end_hour])
+    return [(start, end) for start, end in merged]
+
+
+def _format_timeline_day_label(day_date):
+    weekday = WEEKDAY_NAMES_UA[day_date.weekday()] if day_date else "Невідомий день"
+    return f"{weekday} ({day_date.strftime('%d.%m')})"
+
+
+def _hour_fraction(date_obj: datetime) -> float:
+    return date_obj.hour + date_obj.minute / 60 + date_obj.second / 3600
+
+
+def _clamp(value: float, lower: float, upper: float) -> float:
+    if value < lower:
+        return lower
+    if value > upper:
+        return upper
+    return value
+
+
+async def create_schedule_screenshot(outages_info: dict, scope: Literal["today", "tomorrow"]) -> Path | None:
+    if not TIMELINE_SCREENSHOT_ENABLED:
+        return None
+
+    script_path = TIMELINE_SCREENSHOT_SCRIPT
+    if not script_path or not script_path.exists():
+        logging.debug("Скрипт скріншотів не знайдено: %s", script_path)
+        return None
+
+    payload = _build_timeline_payload(outages_info, scope)
+    if not payload:
+        logging.debug("Немає даних для скріншоту (scope=%s).", scope)
+        return None
+
+    output_dir = Path(tempfile.gettempdir())
+    output_path = output_dir / f"timeline-{scope}-{int(time.time())}.png"
+    cmd = [
+        sys.executable,
+        str(script_path),
+        "--json",
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        "--output",
+        str(output_path),
+    ]
+    if TIMELINE_SCREENSHOT_BASE_URL:
+        cmd.extend(["--base-url", TIMELINE_SCREENSHOT_BASE_URL])
+
+    try:
+        process = await asyncio.create_subprocess_exec(*cmd, stdout=PIPE, stderr=PIPE)
+    except FileNotFoundError:
+        logging.exception("Не вдалося запустити скрипт скріншотів.")
+        return None
+
+    stdout, stderr = await process.communicate()
+    if process.returncode != 0:
+        logging.error(
+            "Скрипт скріншотів завершився з помилкою (scope=%s, code=%s): %s",
+            scope,
+            process.returncode,
+            stderr.decode(errors="ignore").strip(),
+        )
+        return None
+
+    stdout_text = stdout.decode(errors="ignore").strip()
+    if stdout_text:
+        logging.info("Скрипт скріншотів: %s", stdout_text)
+
+    if not output_path.exists():
+        logging.error("Очікуваний файл скріншоту не знайдено: %s", output_path)
+        return None
+
+    return output_path
+
+
+def _cleanup_temp_file(path: Path | None):
+    if not path:
+        return
+    with contextlib.suppress(Exception):
+        path.unlink()
+
+
+async def notify(bot: Bot, text: str, photo_path: str | None = None):
     if not ALERT_CHAT_TARGETS:
         return
+    photo_candidate: Path | None = None
+    if photo_path:
+        candidate = Path(photo_path)
+        if candidate.exists():
+            photo_candidate = candidate
+        else:
+            logging.warning("Файл для вкладення не знайдено: %s", photo_path)
+
     for chat_id, thread_id in ALERT_CHAT_TARGETS:
         try:
-            if thread_id is None:
-                await bot.send_message(chat_id, text)
+            if photo_candidate:
+                file_input = types.FSInputFile(str(photo_candidate))
+                if thread_id is None:
+                    await bot.send_photo(chat_id, file_input, caption=text)
+                else:
+                    await bot.send_photo(chat_id, file_input, caption=text, message_thread_id=thread_id)
             else:
-                await bot.send_message(chat_id, text, message_thread_id=thread_id)
+                if thread_id is None:
+                    await bot.send_message(chat_id, text)
+                else:
+                    await bot.send_message(chat_id, text, message_thread_id=thread_id)
             await asyncio.sleep(0.05)  # невеликий тротлінг між повідомленнями
         except Exception as e:
             logging.error("send_message failed (%s): %s", chat_id, e)
@@ -466,6 +691,50 @@ async def cmd_tomorrow(m: Message):
         logging.error("cmd_tomorrow error: %s", e)
         await m.answer("❌ Помилка при завантаженні графіку")
 
+
+@router.message(Command("testscreenshot"))
+async def cmd_testscreenshot(m: Message, command: CommandObject):
+    if await _skip_if_blocked(m):
+        return
+    if m.chat.id != ADMIN_LOG_CHAT_ID:
+        return
+
+    args = (command.args or "").strip().lower()
+    scope: Literal["today", "tomorrow"] = "today"
+    if args in {"tomorrow", "t", "завтра"}:
+        scope = "tomorrow"
+
+    scope_label = "сьогодні" if scope == "today" else "завтра"
+    await m.answer(f"🧪 Готуємо скріншот графіка на {scope_label}…")
+
+    try:
+        outages_info = await asyncio.to_thread(
+            yasno.get_today_outages if scope == "today" else yasno.get_tomorrow_outages
+        )
+    except Exception as error:
+        logging.error("testscreenshot fetch error (%s): %s", scope, error)
+        await m.answer(f"❌ Не вдалося отримати графік на {scope_label}.")
+        return
+
+    message_body = build_today_message(outages_info)
+    screenshot_path: Path | None = None
+    try:
+        screenshot_path = await create_schedule_screenshot(outages_info, scope=scope)
+    except Exception:
+        logging.exception("testscreenshot generation error (%s)", scope)
+
+    try:
+        if screenshot_path:
+            photo = types.FSInputFile(str(screenshot_path))
+            await m.answer_photo(
+                photo,
+                caption=f"🧪 Тестовий скріншот ({scope_label}):\n\n{message_body}",
+            )
+        else:
+            await m.answer(f"⚠️ Скріншот не згенеровано. Повідомлення:\n\n{message_body}")
+    finally:
+        _cleanup_temp_file(screenshot_path)
+
 # ───────────────── background monitor ─────────────────
 async def schedule_monitor(bot: Bot):
     global last_today_signature, last_today_date
@@ -499,7 +768,20 @@ async def schedule_monitor(bot: Bot):
             if persist_required:
                 await db.upsert_schedule(today_date, status, outages_info.get("outages"), raw_slots)
             if message_body:
-                await notify(bot, f"🔔 Графік на сьогодні оновлено!\n\n{message_body}")
+                screenshot_path: Path | None = None
+                try:
+                    screenshot_path = await create_schedule_screenshot(outages_info, scope="today")
+                except Exception:
+                    logging.exception("Помилка при генерації скріншоту (today).")
+                try:
+                    await notify(
+                        bot,
+                        f"🔔 Графік на сьогодні оновлено!\n\n{message_body}",
+                        photo_path=str(screenshot_path) if screenshot_path else None,
+                    )
+                finally:
+                    _cleanup_temp_file(screenshot_path)
+
                 asyncio.create_task(web_notify({
                     "type": "schedule_updated",
                     "category": "schedule_change",
@@ -552,7 +834,20 @@ async def schedule_monitor_tomorrow(bot: Bot):
             if persist_required:
                 await db.upsert_schedule(tomorrow_date, current_status, outages_info.get("outages"), raw_slots)
             if message_body:
-                await notify(bot, f"🔔 З'явився графік на завтра!\n\n{message_body}")
+                screenshot_path: Path | None = None
+                try:
+                    screenshot_path = await create_schedule_screenshot(outages_info, scope="tomorrow")
+                except Exception:
+                    logging.exception("Помилка при генерації скріншоту (tomorrow).")
+                try:
+                    await notify(
+                        bot,
+                        f"🔔 З'явився графік на завтра!\n\n{message_body}",
+                        photo_path=str(screenshot_path) if screenshot_path else None,
+                    )
+                finally:
+                    _cleanup_temp_file(screenshot_path)
+
                 asyncio.create_task(web_notify({
                     "type": "schedule_updated",
                     "category": "schedule_change",
