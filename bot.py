@@ -50,6 +50,7 @@ def _parse_chat_targets_env(raw: str | None) -> tuple[tuple[int, int | None], ..
 
 
 ALERT_CHAT_TARGETS: Final[tuple[tuple[int, int | None], ...]] = _parse_chat_targets_env(os.getenv("ALERT_CHAT_ID"))
+BLOCKED_CHAT_TARGETS: Final[tuple[tuple[int, int | None], ...]] = _parse_chat_targets_env(os.getenv("BLOCK_ALERT_CHAT_ID"))
 UDP_PORT = int(os.getenv("UDP_PORT", "5005"))
 DEFAULT_THRESHOLD_SEC = float(os.getenv("THRESHOLD_SEC", "6"))
 SCHEDULE_POLL_INTERVAL_SEC = 60
@@ -75,6 +76,37 @@ REMINDER_HISTORY_TTL_SEC = 6 * 3600
 reminder_history: dict[str, float] = {}
 
 # ───────────────── helpers ─────────────────
+def _is_chat_blocked(chat_id: int, thread_id: int | None) -> bool:
+    if not BLOCKED_CHAT_TARGETS:
+        return False
+    for blocked_chat_id, blocked_thread_id in BLOCKED_CHAT_TARGETS:
+        if blocked_chat_id != chat_id:
+            continue
+        if blocked_thread_id is None:
+            if thread_id is None:
+                return True
+            continue
+        if blocked_thread_id == thread_id:
+            return True
+    return False
+
+async def _skip_if_blocked(message: Message) -> bool:
+    """
+    Повертає True, якщо команда повинна бути проігнорована через блокування чату.
+    Також намагається видалити повідомлення користувача.
+    """
+    chat = message.chat
+    if chat is None:
+        return False
+    thread_id = message.message_thread_id
+    if not _is_chat_blocked(chat.id, thread_id):
+        return False
+    try:
+        await message.delete()
+    except Exception as e:
+        logging.warning("Не вдалося видалити команду у chat=%s thread=%s: %s", chat.id, thread_id, e)
+    return True
+
 def fmt_dt(ts: float) -> str:
     try:
         return datetime.fromtimestamp(ts, tz=TZ).strftime("%Y-%m-%d %H:%M:%S")
@@ -260,6 +292,8 @@ async def web_notify(payload: dict):
 # ───────────────── Telegram handlers ─────────────────
 @router.message(Command("start"))
 async def cmd_start(m: Message):
+    if await _skip_if_blocked(m):
+        return
     await m.answer(
         "👋 Бот моніторингу живлення ЖК 4U з графіками відключень YASNO.\n"
         f"Група: {YASNO_GROUP}\n"
@@ -274,6 +308,8 @@ async def cmd_notifyweb(m: Message, command: CommandObject):
     Або:
       /notifyweb {"type":"custom","title":"Тест","body":"Повідомлення"}
     """
+    if await _skip_if_blocked(m):
+        return
     # Дозволяємо лише з адмін-чату
     if m.chat.id != ADMIN_LOG_CHAT_ID:
         return
@@ -314,6 +350,8 @@ async def cmd_notifyweb(m: Message, command: CommandObject):
 
 @router.message(Command("subcount"))
 async def cmd_subcount(m: Message):
+    if await _skip_if_blocked(m):
+        return
     # Доступ лише з адмін-чату
     if m.chat.id != ADMIN_LOG_CHAT_ID:
         return
@@ -326,6 +364,8 @@ async def cmd_subcount(m: Message):
 
 @router.message(Command("status"))
 async def cmd_status(m: Message):
+    if await _skip_if_blocked(m):
+        return
     print("status chat_id: " + str(m.chat.id))
     thread_id = m.message_thread_id
     username = None
@@ -369,6 +409,8 @@ async def cmd_status(m: Message):
 
 @router.message(Command("today"))
 async def cmd_today(m: Message):
+    if await _skip_if_blocked(m):
+        return
     try:
         outages_info = await asyncio.to_thread(yasno.get_today_outages)
         message = build_today_message(outages_info)
@@ -379,6 +421,8 @@ async def cmd_today(m: Message):
 
 @router.message(Command("tomorrow"))
 async def cmd_tomorrow(m: Message):
+    if await _skip_if_blocked(m):
+        return
     try:
         outages_info = await asyncio.to_thread(yasno.get_tomorrow_outages)
         date_str = outages_info["date"].strftime("%d.%m.%Y")
