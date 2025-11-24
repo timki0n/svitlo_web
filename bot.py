@@ -436,7 +436,7 @@ async def create_schedule_screenshot(outages_info: dict, scope: Literal["today",
         cmd.extend(["--base-url", TIMELINE_SCREENSHOT_BASE_URL])
 
     cmd_display = shlex.join(cmd)
-    logging.debug(
+    logging.error(
         "Screenshot run: python=%s script=%s scope=%s output=%s cmd=%s",
         python_exec,
         script_path,
