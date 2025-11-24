@@ -64,6 +64,7 @@ DEFAULT_SCREENSHOT_SCRIPT = Path(__file__).with_name("scripts").joinpath("render
 TIMELINE_SCREENSHOT_SCRIPT = Path(os.getenv("TIMELINE_SCREENSHOT_SCRIPT", str(DEFAULT_SCREENSHOT_SCRIPT)))
 TIMELINE_SCREENSHOT_BASE_URL = os.getenv("TIMELINE_SCREENSHOT_BASE_URL", "http://127.0.0.1:3000")
 TIMELINE_SCREENSHOT_ENABLED = os.getenv("TIMELINE_SCREENSHOT_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
+TIMELINE_SCREENSHOT_PYTHON = os.getenv("TIMELINE_SCREENSHOT_PYTHON") or sys.executable
 
 TZ = ZoneInfo("Europe/Kyiv")
 
@@ -410,6 +411,11 @@ async def create_schedule_screenshot(outages_info: dict, scope: Literal["today",
         logging.debug("Скрипт скріншотів не знайдено: %s", script_path)
         return None
 
+    python_exec = Path(TIMELINE_SCREENSHOT_PYTHON)
+    if not python_exec.exists():
+        logging.error("Інтерпретатор для скріншоту не знайдено: %s", python_exec)
+        return None
+
     payload = _build_timeline_payload(outages_info, scope)
     if not payload:
         logging.debug("Немає даних для скріншоту (scope=%s).", scope)
@@ -418,7 +424,7 @@ async def create_schedule_screenshot(outages_info: dict, scope: Literal["today",
     output_dir = Path(tempfile.gettempdir())
     output_path = output_dir / f"timeline-{scope}-{int(time.time())}.png"
     cmd = [
-        sys.executable,
+        str(python_exec),
         str(script_path),
         "--json",
         json.dumps(payload, ensure_ascii=False, separators=(",", ":")),

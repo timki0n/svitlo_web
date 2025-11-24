@@ -19,6 +19,7 @@ Bot side:
 - TIMELINE_SCREENSHOT_SCRIPT — optional override for `scripts/render_timeline_screenshot.py`
 - TIMELINE_SCREENSHOT_BASE_URL — base URL of the Next.js app (default http://127.0.0.1:3000)
 - TIMELINE_SCREENSHOT_ENABLED — set to `0`/`false` to disable screenshot generation
+- TIMELINE_SCREENSHOT_PYTHON — повний шлях до Python-інтерпретатора (наприклад `./venv/Scripts/python.exe`)
 
 ## Timeline screenshot workflow
 
