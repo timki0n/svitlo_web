@@ -412,6 +412,7 @@ async def create_schedule_screenshot(outages_info: dict, scope: Literal["today",
         return None
 
     python_exec = Path(TIMELINE_SCREENSHOT_PYTHON)
+    print("python_exec: " + str(python_exec))
     if not python_exec.exists():
         logging.error("Інтерпретатор для скріншоту не знайдено: %s", python_exec)
         return None
