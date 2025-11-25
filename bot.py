@@ -206,7 +206,7 @@ def _load_schedule_bundle() -> tuple[dict, dict]:
 def _extract_plan_segments(*day_infos: dict) -> list[tuple[datetime, datetime]]:
     segments: list[tuple[datetime, datetime]] = []
     for info in day_infos:
-        if not info or info.get("status") != "ScheduleApplies":
+        if not info or info.get("status") not in ["ScheduleApplies", "EmergencyShutdowns"]:
             continue
         date_value = info.get("date")
         if not date_value:

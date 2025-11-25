@@ -17,7 +17,7 @@ from urllib.parse import urlencode
 
 DEFAULT_BASE_URL = os.environ.get("TIMELINE_SCREENSHOT_BASE_URL", "http://127.0.0.1:3000")
 DEFAULT_SELECTOR = "[data-testid=snake-day-timeline]"
-DEFAULT_VIEWPORT = (500, 1440)
+DEFAULT_VIEWPORT = (700, 1440)
 
 
 def parse_args() -> argparse.Namespace:

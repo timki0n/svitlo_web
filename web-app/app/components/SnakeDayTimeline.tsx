@@ -43,6 +43,8 @@ const OUTAGE_GLOW = "rgba(148, 163, 184, 0.35)";
 export function SnakeDayTimeline({ data }: SnakeDayTimelineProps) {
   const showCurrentTime = data.showCurrentTimeIndicator !== false;
   const contextLabel = data.contextLabel ?? "Сьогодні";
+  const isEmergency = data.status === "EmergencyShutdowns";
+  const showEmptyState = !data.hasPlanSegments && !isEmergency;
   const rows = Array.from({ length: ROW_COUNT }, (_, rowIndex) => {
     const startSlot = rowIndex * SLOTS_PER_ROW;
     const rowSlots = data.slots.slice(startSlot, startSlot + SLOTS_PER_ROW);
@@ -78,13 +80,6 @@ export function SnakeDayTimeline({ data }: SnakeDayTimelineProps) {
       : "border-emerald-400/30 from-emerald-950/40 via-slate-950/60 to-black"
     : "border-slate-800/40 from-slate-950/50 via-zinc-950/50 to-black";
 
-  const statusBadge =
-    data.status === "EmergencyShutdowns"
-      ? "⚠️ Графік наразі не діє"
-      : data.hasPlanSegments
-        ? ""
-        : "";
-
   const limitedOutageHours = Math.max(0, Math.min(24, data.summary.outageHours));
   const lightHoursLabel = formatHoursWithUnits(Math.max(data.summary.lightHours, 0));
   const outageHoursLabel = formatHoursWithUnits(limitedOutageHours);
@@ -115,11 +110,10 @@ export function SnakeDayTimeline({ data }: SnakeDayTimelineProps) {
                 Зараз {data.currentTimeLabel}
               </span>
             ) : null}
-            <span className="text-xs text-zinc-300">{statusBadge}</span>
           </div>
         </header>
 
-        {!data.hasPlanSegments ? (
+        {showEmptyState ? (
           <div className="rounded-2xl border border-dashed border-amber-200/50 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
             На сьогодні графік відключень порожній.
           </div>
@@ -144,7 +138,7 @@ export function SnakeDayTimeline({ data }: SnakeDayTimelineProps) {
           </div>
         )}
 
-        <div className="flex flex-col gap-1.5">
+        <div className={`flex flex-col gap-1.5 ${isEmergency ? "opacity-30" : ""}`}>
           {rows.map((row) => (
             <SnakeRow key={row.rowIndex} slots={row.rowSlots} nowPercent={row.nowPercent} />
           ))}
@@ -156,12 +150,16 @@ export function SnakeDayTimeline({ data }: SnakeDayTimelineProps) {
             <LegendChip label="Світло" color="rgba(34,197,94,0.95)" />
             <LegendChip label="Теперішній час" variant="line" color="rgba(52,211,153,0.7)" />
           </div>
-
-          <span className="rounded-full border border-white/10 px-3 py-1 text-[10px] uppercase tracking-wide text-white/70">
-            00:00 → 24:00
-          </span>
         </div>
       </div>
+      {isEmergency ? (
+        <div className="pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center rounded-2xl bg-black/75 px-6 text-center">
+          <span className="text-xs uppercase tracking-[0.35em] text-white/60">⚠️</span>
+          <p className="mt-3 text-lg font-semibold uppercase tracking-wide text-white">
+            ДІЮТЬ ЕКСТРЕННІ ВІДКЛЮЧЕННЯ
+          </p>
+        </div>
+      ) : null}
     </div>
   );
 }
