@@ -1,3 +1,7 @@
+'use client';
+
+import { useEffect, useState } from "react";
+
 type SnakeTimelineSlot = {
   index: number;
   startHour: number;
@@ -33,26 +37,52 @@ type SnakeDayTimelineProps = {
   data: SnakeTimelineData;
 };
 
-const ROW_COUNT = 4;
-const SLOTS_PER_ROW = 6;
+const TOTAL_DAY_HOURS = 24;
+const DEFAULT_SLOTS_PER_ROW = 6;
+const COMPACT_SLOTS_PER_ROW = 4;
 const OUTAGE_GRADIENT = "linear-gradient(120deg, rgba(100, 116, 139, 0.9), rgba(148, 163, 184, 0.95))";
 const OUTAGE_BORDER = "rgba(148, 163, 184, 0.85)";
 const LIGHT_GLOW = "rgba(52, 211, 153, 0.45)";
 const OUTAGE_GLOW = "rgba(148, 163, 184, 0.35)";
 
+function useCompactTimelineLayout() {
+  const [isCompact, setIsCompact] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const mediaQuery = window.matchMedia("(max-width: 520px)");
+    const handleChange = (event: MediaQueryListEvent | MediaQueryList) => setIsCompact(event.matches);
+
+    handleChange(mediaQuery);
+    if (typeof mediaQuery.addEventListener === "function") {
+      mediaQuery.addEventListener("change", handleChange);
+      return () => mediaQuery.removeEventListener("change", handleChange);
+    }
+    mediaQuery.addListener(handleChange);
+    return () => mediaQuery.removeListener(handleChange);
+  }, []);
+
+  return isCompact;
+}
+
 export function SnakeDayTimeline({ data }: SnakeDayTimelineProps) {
+  const isCompactLayout = useCompactTimelineLayout();
+  const slotsPerRow = isCompactLayout ? COMPACT_SLOTS_PER_ROW : DEFAULT_SLOTS_PER_ROW;
+  const rowsCount = Math.ceil(TOTAL_DAY_HOURS / slotsPerRow);
   const showCurrentTime = data.showCurrentTimeIndicator !== false;
   const contextLabel = data.contextLabel ?? "Сьогодні";
   const isEmergency = data.status === "EmergencyShutdowns";
   const showEmptyState = !data.hasPlanSegments && !isEmergency;
-  const rows = Array.from({ length: ROW_COUNT }, (_, rowIndex) => {
-    const startSlot = rowIndex * SLOTS_PER_ROW;
-    const rowSlots = data.slots.slice(startSlot, startSlot + SLOTS_PER_ROW);
-    const rowStartHour = rowIndex * 6;
-    const rowEndHour = rowStartHour + 6;
+  const rows = Array.from({ length: rowsCount }, (_, rowIndex) => {
+    const startSlot = rowIndex * slotsPerRow;
+    const rowSlots = data.slots.slice(startSlot, startSlot + slotsPerRow);
+    const rowStartHour = rowIndex * slotsPerRow;
+    const rowEndHour = rowStartHour + slotsPerRow;
     const containsNow =
       showCurrentTime && Number.isFinite(data.nowHour) && data.nowHour >= rowStartHour && data.nowHour < rowEndHour;
-    const nowPercent = containsNow ? ((data.nowHour - rowStartHour) / 6) * 100 : null;
+    const nowPercent = containsNow ? ((data.nowHour - rowStartHour) / slotsPerRow) * 100 : null;
 
     return {
       rowIndex,
