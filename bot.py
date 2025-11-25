@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 from typing import Final, Literal
 
 from aiogram import Bot, Dispatcher, Router, types
+from aiogram.client.default import DefaultBotProperties
 from aiogram.types import Message
 from aiogram.filters import Command, CommandObject
 
@@ -67,6 +68,11 @@ TIMELINE_SCREENSHOT_ENABLED = os.getenv("TIMELINE_SCREENSHOT_ENABLED", "1").stri
 TIMELINE_SCREENSHOT_PYTHON = os.getenv("TIMELINE_SCREENSHOT_PYTHON") or sys.executable
 
 TZ = ZoneInfo("Europe/Kyiv")
+SCHEDULE_URL: Final[str] = "https://svitlo4u.online"
+
+
+def schedule_link(label: str) -> str:
+    return f'<a href="{SCHEDULE_URL}">{label}</a>'
 
 # ───────────────── глобальний стан ─────────────────
 router = Router()
@@ -146,7 +152,7 @@ def build_today_message(outages_info: dict) -> str:
         if status == "EmergencyShutdowns":
             return (
                 f"📅 Розклад на {date_str}\n"
-                f"🚨 Графік не діє. Діють екстрені відключення."
+                f"🚨 {schedule_link('Графік')} не діє. Діють екстрені відключення."
             )
         if status == "WaitingForSchedule":
             return (
@@ -386,7 +392,7 @@ async def cmd_start(m: Message):
     if await _skip_if_blocked(m):
         return
     await m.answer(
-        "👋 Бот моніторингу живлення ЖК 4U з графіками відключень YASNO.\n"
+        f"👋 Бот моніторингу живлення ЖК 4U з {schedule_link('графіками')} відключень YASNO.\n"
         f"Група: {YASNO_GROUP}\n"
     )
 
@@ -488,8 +494,8 @@ async def cmd_status(m: Message):
         outage_text, restore_text = await asyncio.to_thread(_fetch_schedule_messages, now)
     except Exception as e:
         logging.error("cmd_status schedule fetch error: %s", e)
-        outage_text = "⚠️ Не вдалося отримати графік"
-        restore_text = "⚠️ Не вдалося отримати графік"
+        outage_text = f"⚠️ Не вдалося отримати {schedule_link('графік')}"
+        restore_text = f"⚠️ Не вдалося отримати {schedule_link('графік')}"
 
     secs = listener.seconds_since_last_packet()
     power_down = secs > threshold_sec
@@ -508,7 +514,7 @@ async def cmd_today(m: Message):
         await m.answer(message)
     except Exception as e:
         logging.error("cmd_today error: %s", e)
-        await m.answer("❌ Помилка при завантаженні графіку")
+        await m.answer(f"❌ Помилка при завантаженні {schedule_link('графіку')}")
 
 @router.message(Command("tomorrow"))
 async def cmd_tomorrow(m: Message):
@@ -524,7 +530,7 @@ async def cmd_tomorrow(m: Message):
             if status == "EmergencyShutdowns":
                 await m.answer(
                     f"📅 Розклад на {date_str}\n"
-                    f"🚨 Графік не діє. Діють екстрені відключення."
+                    f"🚨 {schedule_link('Графік')} не діє. Діють екстрені відключення."
                 )
             elif status == "WaitingForSchedule":
                 await m.answer(
@@ -555,7 +561,7 @@ async def cmd_tomorrow(m: Message):
         await m.answer(message)
     except Exception as e:
         logging.error("cmd_tomorrow error: %s", e)
-        await m.answer("❌ Помилка при завантаженні графіку")
+            await m.answer(f"❌ Помилка при завантаженні {schedule_link('графіку')}")
 
 
 @router.message(Command("testscreenshot"))
@@ -571,7 +577,7 @@ async def cmd_testscreenshot(m: Message, command: CommandObject):
         scope = "tomorrow"
 
     scope_label = "сьогодні" if scope == "today" else "завтра"
-    await m.answer(f"🧪 Готуємо скріншот графіка на {scope_label}…")
+    await m.answer(f"🧪 Готуємо скріншот {schedule_link('графіка')} на {scope_label}…")
 
     try:
         outages_info = await asyncio.to_thread(
@@ -579,7 +585,7 @@ async def cmd_testscreenshot(m: Message, command: CommandObject):
         )
     except Exception as error:
         logging.error("testscreenshot fetch error (%s): %s", scope, error)
-        await m.answer(f"❌ Не вдалося отримати графік на {scope_label}.")
+        await m.answer(f"❌ Не вдалося отримати {schedule_link('графік')} на {scope_label}.")
         return
 
     message_body = build_today_message(outages_info)
@@ -642,7 +648,7 @@ async def schedule_monitor(bot: Bot):
                 try:
                     await notify(
                         bot,
-                        f"🔔 Графік на сьогодні оновлено!\n\n{message_body}",
+                        f"🔔 {schedule_link('Графік на сьогодні')} оновлено!\n\n{message_body}",
                         photo_path=str(screenshot_path) if screenshot_path else None,
                     )
                 finally:
@@ -708,7 +714,7 @@ async def schedule_monitor_tomorrow(bot: Bot):
                 try:
                     await notify(
                         bot,
-                        f"🔔 З'явився графік на завтра!\n\n{message_body}",
+                        f"🔔 З'явився {schedule_link('графік на завтра')}!\n\n{message_body}",
                         photo_path=str(screenshot_path) if screenshot_path else None,
                     )
                 finally:
@@ -953,7 +959,13 @@ async def main():
     if not BOT_TOKEN:
         raise SystemExit("⚠️ Не знайдено BOT_TOKEN. Додай у .env або в код.")
 
-    bot = Bot(BOT_TOKEN)
+    bot = Bot(
+        BOT_TOKEN,
+        default=DefaultBotProperties(
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        ),
+    )
     dp = Dispatcher()
     dp.include_router(router)
 
