@@ -31,6 +31,7 @@ export type SnakeTimelineData = {
   summary: SnakeTimelineSummary;
   contextLabel?: string;
   showCurrentTimeIndicator?: boolean;
+  isFutureDay: boolean;
 };
 
 type SnakeDayTimelineProps = {
@@ -118,7 +119,10 @@ export function SnakeDayTimeline({ data }: SnakeDayTimelineProps) {
   const diffValue = Math.abs(data.summary.diffHours);
   const diffLabel = `${data.summary.diffHours >= 0 ? "+" : "-"}${formatHoursAsClock(diffValue)}`;
   const diffToneClass = data.summary.diffHours >= 0 ? "text-emerald-300" : "text-rose-300";
-  const showActualSummary = data.summary.hasActualData && (limitedOutageHours > 0 || data.summary.lightHours > 0);
+  const showActualSummary =
+    !data.isFutureDay && data.summary.hasActualData && (limitedOutageHours > 0 || data.summary.lightHours > 0);
+  const plannedOutageHours = Math.max(0, Math.min(24, data.summary.plannedHours));
+  const plannedLightHoursLabel = formatHoursWithUnits(Math.max(0, 24 - plannedOutageHours));
 
   return (
     <div
@@ -150,7 +154,9 @@ export function SnakeDayTimeline({ data }: SnakeDayTimelineProps) {
         ) : (
           <div className="rounded-2xl border border-white/10 bg-white/5 p-4 shadow-inner backdrop-blur-sm">
             <div className="flex flex-wrap items-center gap-3 text-sm text-white">
-              {showActualSummary ? (
+              {data.isFutureDay ? (
+                <SummaryBadge label="Світло має бути" value={plannedLightHoursLabel} tone="positive" />
+              ) : showActualSummary ? (
                 <>
                   <SummaryBadge label="Світло було" value={lightHoursLabel} tone="positive" />
                   <SummaryBadge label="Світла не було" value={outageHoursLabel} tone="negative" />

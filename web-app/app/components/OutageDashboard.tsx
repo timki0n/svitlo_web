@@ -395,6 +395,12 @@ function addDays(date: Date, days: number): Date {
   return result;
 }
 
+function startOfDay(date: Date): Date {
+  const clone = new Date(date);
+  clone.setHours(0, 0, 0, 0);
+  return clone;
+}
+
 function formatElapsedDuration(from: Date, to: Date) {
   const diffMs = Math.max(to.getTime() - from.getTime(), 0);
   const totalMinutes = Math.floor(diffMs / (60 * 1000));
@@ -652,10 +658,15 @@ type SnakePlanSegment = {
 
 function resolveSnakeTimeline(weeks: WeekForChart[], now: Date, targetDateOverride?: Date): SnakeTimelineData {
   const targetDate = targetDateOverride ?? now;
+  const nowHourFraction = clampHour(getHourFraction(now));
   const dayByKey = new Map(weeks.flatMap((week) => week.days).map((day) => [day.key, day]));
   const todayKey = formatDateKey(now);
   const targetKey = formatDateKey(targetDate);
   const tomorrowKey = formatDateKey(addDays(now, 1));
+  const startOfToday = startOfDay(now);
+  const startOfTarget = startOfDay(targetDate);
+  const isTargetToday = targetKey === todayKey;
+  const isFutureDay = startOfTarget.getTime() > startOfToday.getTime();
   const currentDay = dayByKey.get(targetKey) ?? null;
   const planSegments = currentDay ? normalisePlanSegments(currentDay.segments) : [];
   const slots = buildSnakeSlots(planSegments);
@@ -667,15 +678,14 @@ function resolveSnakeTimeline(weeks: WeekForChart[], now: Date, targetDateOverri
   const isPlaceholder = currentDay ? Boolean(currentDay.isPlaceholder) : !hasPlanSegments;
   const plannedHours = currentDay?.plannedHours ?? 0;
   const actualHours = currentDay?.actualHours ?? 0;
-  const outageHours = clampDurationHours(actualHours);
-  const lightHours = Math.max(0, 24 - outageHours);
+  const elapsedHours = isTargetToday ? nowHourFraction : 24;
+  const outageHours = Math.min(clampDurationHours(actualHours), elapsedHours);
+  const lightHours = Math.max(0, elapsedHours - outageHours);
   const diffHours = plannedHours - actualHours;
   const hasActualData = currentDay ? currentDay.segments.some((segment) => segment.source === "actual") : false;
-
-  const isTargetToday = targetKey === todayKey;
   const isTargetTomorrow = targetKey === tomorrowKey;
   const contextLabel = isTargetToday ? "Сьогодні" : isTargetTomorrow ? "Завтра" : fallbackLabel;
-  const nowHour = isTargetToday ? getHourFraction(now) : 0;
+  const nowHour = isTargetToday ? nowHourFraction : 0;
   const currentTimeLabel = isTargetToday ? formatTime(now) : "—:—";
 
   return {
@@ -697,6 +707,7 @@ function resolveSnakeTimeline(weeks: WeekForChart[], now: Date, targetDateOverri
     },
     contextLabel,
     showCurrentTimeIndicator: isTargetToday,
+    isFutureDay,
   };
 }
 
