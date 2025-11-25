@@ -561,7 +561,7 @@ async def cmd_tomorrow(m: Message):
         await m.answer(message)
     except Exception as e:
         logging.error("cmd_tomorrow error: %s", e)
-            await m.answer(f"❌ Помилка при завантаженні {schedule_link('графіку')}")
+        await m.answer(f"❌ Помилка при завантаженні {schedule_link('графіку')}")
 
 
 @router.message(Command("testscreenshot"))
