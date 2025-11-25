@@ -97,6 +97,7 @@ export function SnakeDayTimeline({ data }: SnakeDayTimelineProps) {
 
   return (
     <div
+      data-testid="snake-day-timeline"
       className={`relative overflow-hidden rounded-2xl border bg-linear-to-br px-5 py-6 text-zinc-50 shadow-[0_20px_60px_rgba(0,0,0,0.45)] ${toneClassName}`}
     >
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.15),transparent_55%)]" />
@@ -120,7 +121,7 @@ export function SnakeDayTimeline({ data }: SnakeDayTimelineProps) {
 
         {!data.hasPlanSegments ? (
           <div className="rounded-2xl border border-dashed border-amber-200/50 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-            На сьогодні графік відключень порожній, але залишаємо часову розмітку для орієнтиру.
+            На сьогодні графік відключень порожній.
           </div>
         ) : (
           <div className="rounded-2xl border border-white/10 bg-white/5 p-4 shadow-inner backdrop-blur-sm">

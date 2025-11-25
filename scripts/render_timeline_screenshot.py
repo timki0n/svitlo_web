@@ -1,35 +1,27 @@
 #!/usr/bin/env python3
 """
-Робить скріншот сторінки /timeline/screenshot у web-app.
+Знімає скріншот основної сторінки web-app (/) та витягує компонент SnakeDayTimeline.
 
-Використання:
-    python scripts/render_timeline_screenshot.py \
-        --json-file schedule.json \
-        --output out/schedule.png \
-        --base-url http://127.0.0.1:3000
+Бот попередньо записує актуальні дані в БД, після чого цей скрипт відкриває /?botToken=...
+і робить скріншот елемента з розкладом напряму з головної сторінки.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 import contextlib
-import json
 import os
 from pathlib import Path
-from typing import Any
-from urllib.parse import quote
+from urllib.parse import urlencode
 
 DEFAULT_BASE_URL = os.environ.get("TIMELINE_SCREENSHOT_BASE_URL", "http://127.0.0.1:3000")
-DEFAULT_SELECTOR = "[data-test=snake-day-timeline-ready]"
-DEFAULT_VIEWPORT = (600, 1440)
+DEFAULT_SELECTOR = "[data-testid=snake-day-timeline]"
+DEFAULT_VIEWPORT = (500, 1440)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Робить скріншот SnakeDayTimeline через Playwright.")
-    parser.add_argument("--json-file", type=Path, help="Файл із JSON графіком.")
-    parser.add_argument("--json", dest="json_inline", help="JSON рядок (альтернатива --json-file).")
     parser.add_argument("--output", required=True, type=Path, help="Шлях до PNG, куди зберегти скріншот.")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Базовий URL web-app (за замовчуванням http://127.0.0.1:3000).")
     parser.add_argument("--timeout", type=float, default=15.0, help="Таймаут завантаження сторінки (сек).")
@@ -40,44 +32,37 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wait-ms", type=int, default=400, help="Додаткова пауза перед скріншотом (мс).")
     parser.add_argument("--full-page", action="store_true", help="Знімати всю сторінку замість селектора.")
     parser.add_argument("--headed", action="store_true", help="Запустити браузер у видимому режимі (debug).")
+    parser.add_argument(
+        "--bot-token",
+        dest="bot_token",
+        help="Токен, який додається в query (?botToken=...) для відключення кешу та проходу білих списків.",
+    )
+    parser.add_argument(
+        "--scope",
+        choices=("today", "tomorrow"),
+        default="today",
+        help="Який день показати у SnakeDayTimeline (через параметр ?scope=...).",
+    )
     return parser.parse_args()
 
 
-def ensure_payload_source(args: argparse.Namespace) -> Any:
-    provided = [args.json_file, args.json_inline]
-    supplied_count = sum(1 for item in provided if item)
-    if supplied_count == 0:
-        raise SystemExit("Вкажіть один із параметрів: --json-file або --json.")
-    if supplied_count > 1:
-        raise SystemExit("Використайте лише один із параметрів: --json-file АБО --json.")
-
-    if args.json_file:
-        path = args.json_file
-        if not path.exists():
-            raise SystemExit(f"Файл {path} не існує.")
-        text = path.read_text(encoding="utf-8")
-        return json.loads(text)
-
-    return json.loads(args.json_inline)  # type: ignore[arg-type]
-
-
-def encode_payload(data: Any) -> str:
-    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    return base64.urlsafe_b64encode(payload).decode("ascii")
-
-
-def build_target_url(base_url: str, param_value: str) -> str:
+def build_target_url(base_url: str, bot_token: str | None, scope: str) -> str:
     sanitized_base = base_url.rstrip("/")
-    encoded_param = quote(param_value, safe="")
-    return f"{sanitized_base}/timeline/screenshot?data={encoded_param}"
+    query: dict[str, str] = {}
+    if bot_token:
+        query["botToken"] = bot_token
+    if scope and scope != "today":
+        query["scope"] = scope
+    query_string = urlencode(query)
+    if query_string:
+        return f"{sanitized_base}/?{query_string}"
+    return f"{sanitized_base}/"
 
 
 async def capture_screenshot(args: argparse.Namespace) -> Path:
     from playwright.async_api import TimeoutError as PlaywrightTimeoutError, async_playwright
 
-    payload = ensure_payload_source(args)
-    encoded = encode_payload(payload)
-    target_url = build_target_url(args.base_url, encoded)
+    target_url = build_target_url(args.base_url, args.bot_token, args.scope)
     viewport = {"width": args.viewport_width, "height": args.viewport_height, "device_scale_factor": args.device_scale}
     args.output.parent.mkdir(parents=True, exist_ok=True)
 

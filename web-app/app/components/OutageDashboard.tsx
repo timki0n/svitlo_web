@@ -16,9 +16,10 @@ export type PowerStatus = {
 type OutageDashboardProps = {
   weeks: WeekForChart[];
   status: PowerStatus;
+  timelineTargetDate?: Date;
 };
 
-export function OutageDashboard({ weeks, status }: OutageDashboardProps) {
+export function OutageDashboard({ weeks, status, timelineTargetDate }: OutageDashboardProps) {
   const toneClassName =
     status.tone === "warning"
       ? "border-amber-200 bg-amber-50 dark:border-amber-700/60 dark:bg-amber-900/20"
@@ -37,11 +38,12 @@ export function OutageDashboard({ weeks, status }: OutageDashboardProps) {
       : "radial-gradient(circle at 50% 50%, rgba(34, 197, 94, 0.33), transparent 75%)";
 
   const now = new Date(status.currentISO);
+  const timelineDate = timelineTargetDate ?? now;
   const since = status.sinceISO ? new Date(status.sinceISO) : null;
   const durationLabel = since ? formatElapsedDuration(since, now) : null;
   const durationPrefix = status.tone === "ok" ? "Світло є вже" : "Відключення триває";
   const planSummary = resolvePlanSummary(weeks, now);
-  const snakeTimeline = resolveSnakeTimeline(weeks, now);
+  const snakeTimeline = resolveSnakeTimeline(weeks, now, timelineDate);
   const gaugeData = resolveGaugeState(weeks, status, now);
   const shouldShowDurationLine = durationLabel && gaugeData.variant === "none";
 
@@ -648,24 +650,33 @@ type SnakePlanSegment = {
   endHour: number;
 };
 
-function resolveSnakeTimeline(weeks: WeekForChart[], now: Date): SnakeTimelineData {
-  const nowHour = getHourFraction(now);
+function resolveSnakeTimeline(weeks: WeekForChart[], now: Date, targetDateOverride?: Date): SnakeTimelineData {
+  const targetDate = targetDateOverride ?? now;
   const dayByKey = new Map(weeks.flatMap((week) => week.days).map((day) => [day.key, day]));
   const todayKey = formatDateKey(now);
-  const currentDay = dayByKey.get(todayKey) ?? null;
+  const targetKey = formatDateKey(targetDate);
+  const tomorrowKey = formatDateKey(addDays(now, 1));
+  const currentDay = dayByKey.get(targetKey) ?? null;
   const planSegments = currentDay ? normalisePlanSegments(currentDay.segments) : [];
   const slots = buildSnakeSlots(planSegments);
-  const dayLabel = currentDay?.title ?? formatReadableDayLabel(now);
-  const dateLabel = formatCalendarDate(currentDay?.dateISO ?? now.toISOString());
+  const fallbackLabel = formatReadableDayLabel(targetDate);
+  const dayLabel = currentDay?.title ?? fallbackLabel;
+  const dateLabel = formatCalendarDate(currentDay?.dateISO ?? targetDate.toISOString());
   const status = currentDay?.status ?? null;
   const hasPlanSegments = planSegments.length > 0;
-  const isPlaceholder = currentDay ? Boolean(currentDay.isPlaceholder) : true;
+  const isPlaceholder = currentDay ? Boolean(currentDay.isPlaceholder) : !hasPlanSegments;
   const plannedHours = currentDay?.plannedHours ?? 0;
   const actualHours = currentDay?.actualHours ?? 0;
   const outageHours = clampDurationHours(actualHours);
   const lightHours = Math.max(0, 24 - outageHours);
   const diffHours = plannedHours - actualHours;
   const hasActualData = currentDay ? currentDay.segments.some((segment) => segment.source === "actual") : false;
+
+  const isTargetToday = targetKey === todayKey;
+  const isTargetTomorrow = targetKey === tomorrowKey;
+  const contextLabel = isTargetToday ? "Сьогодні" : isTargetTomorrow ? "Завтра" : fallbackLabel;
+  const nowHour = isTargetToday ? getHourFraction(now) : 0;
+  const currentTimeLabel = isTargetToday ? formatTime(now) : "—:—";
 
   return {
     slots,
@@ -675,7 +686,7 @@ function resolveSnakeTimeline(weeks: WeekForChart[], now: Date): SnakeTimelineDa
     status,
     hasPlanSegments,
     isPlaceholder,
-    currentTimeLabel: formatTime(now),
+    currentTimeLabel,
     summary: {
       plannedHours,
       actualHours,
@@ -684,6 +695,8 @@ function resolveSnakeTimeline(weeks: WeekForChart[], now: Date): SnakeTimelineDa
       diffHours,
       hasActualData,
     },
+    contextLabel,
+    showCurrentTimeIndicator: isTargetToday,
   };
 }
 

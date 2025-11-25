@@ -86,11 +86,21 @@ const cachedActualOutages = unstable_cache(
   }
 );
 
-export async function getSchedules(): Promise<ScheduleRow[]> {
+type FetchOptions = {
+  bypassCache?: boolean;
+};
+
+export async function getSchedules(options?: FetchOptions): Promise<ScheduleRow[]> {
+  if (options?.bypassCache) {
+    return loadSchedules();
+  }
   return cachedSchedules();
 }
 
-export async function getActualOutages(): Promise<ActualOutageRow[]> {
+export async function getActualOutages(options?: FetchOptions): Promise<ActualOutageRow[]> {
+  if (options?.bypassCache) {
+    return loadActualOutages();
+  }
   return cachedActualOutages();
 }
 

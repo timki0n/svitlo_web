@@ -10,13 +10,36 @@ import {
   type ScheduleRow,
 } from "@/lib/db";
 
+const BOT_ACCESS_TOKEN = process.env.NOTIFY_BOT_TOKEN ?? "";
+
+type HomePageProps = {
+  searchParams?:
+    | {
+        botToken?: string;
+        scope?: string;
+      }
+    | Promise<{
+        botToken?: string;
+        scope?: string;
+      }>;
+};
+
 export const dynamic = "force-dynamic";
 
-export default async function Home() {
-  const schedules = await getSchedules();
-  const actualOutages = await getActualOutages();
+export default async function Home({ searchParams }: HomePageProps) {
+  const resolvedSearchParams = await searchParams;
+  const requestedToken = resolvedSearchParams?.botToken ?? null;
+  const isBotRequest = Boolean(BOT_ACCESS_TOKEN) && requestedToken === BOT_ACCESS_TOKEN;
+  const scopeParam = resolvedSearchParams?.scope === "tomorrow" ? "tomorrow" : "today";
+  const bypassCache = isBotRequest;
+
+  const [schedules, actualOutages] = await Promise.all([
+    getSchedules({ bypassCache }),
+    getActualOutages({ bypassCache }),
+  ]);
   const chartWeeks = prepareWeeksForChart(schedules, actualOutages);
   const currentStatus = resolveCurrentStatus(actualOutages);
+  const timelineTargetDate = scopeParam === "tomorrow" ? addDays(new Date(), 1) : new Date();
   const backgroundImagePath =
     currentStatus.tone === "warning"
       ? "/backgrounds/4u_nolight.png"
@@ -39,7 +62,7 @@ export default async function Home() {
       </div>
 
       <AutoRefresh />
-      <OutageDashboard weeks={chartWeeks} status={currentStatus} />
+      <OutageDashboard weeks={chartWeeks} status={currentStatus} timelineTargetDate={timelineTargetDate} />
     </main>
   );
 }

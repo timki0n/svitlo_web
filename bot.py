@@ -264,145 +264,7 @@ def _format_lead_label(minutes: int) -> str:
 WEEKDAY_NAMES_UA = ("Понеділок", "Вівторок", "Середа", "Четвер", "Пʼятниця", "Субота", "Неділя")
 
 
-def _build_timeline_payload(outages_info: dict, scope: Literal["today", "tomorrow"]) -> dict | None:
-    status = outages_info.get("status")
-    if status != "ScheduleApplies":
-        return None
-
-    date_value = outages_info.get("date")
-    if isinstance(date_value, datetime):
-        day_date = date_value.date()
-    else:
-        day_date = date_value or datetime.now(TZ).date()
-
-    raw_slots = outages_info.get("raw_slots") or []
-    plan_segments = _normalise_plan_segments(raw_slots)
-    now = datetime.now(TZ)
-    show_current_time = scope == "today"
-    has_plan_segments = bool(plan_segments)
-    summary = _build_timeline_summary(plan_segments)
-
-    day_label = _format_timeline_day_label(day_date)
-    context_label = "Сьогодні" if scope == "today" else "Завтра"
-    if scope == "tomorrow":
-        day_label = f"Завтра · {day_label}"
-
-    return {
-        "slots": _build_snake_slots(plan_segments),
-        "dayLabel": day_label,
-        "dateLabel": day_date.strftime("%d.%m.%Y"),
-        "nowHour": _hour_fraction(now) if show_current_time else -1,
-        "status": status,
-        "hasPlanSegments": has_plan_segments,
-        "isPlaceholder": not has_plan_segments,
-        "currentTimeLabel": now.strftime("%H:%M") if show_current_time else "—:—",
-        "summary": summary,
-        "contextLabel": context_label,
-        "showCurrentTimeIndicator": show_current_time,
-    }
-
-
-def _normalise_plan_segments(raw_slots) -> list[tuple[float, float]]:
-    segments: list[tuple[float, float]] = []
-    for slot in raw_slots:
-        if not getattr(slot, "is_outage", False):
-            continue
-        start_min = getattr(slot, "start_min", None)
-        end_min = getattr(slot, "end_min", None)
-        if start_min is None or end_min is None:
-            continue
-        start_hour = _clamp(float(start_min) / 60.0, 0.0, 24.0)
-        end_hour = _clamp(float(end_min) / 60.0, 0.0, 24.0)
-        if end_hour <= start_hour:
-            continue
-        segments.append((start_hour, end_hour))
-    return _merge_segments(segments)
-
-
-def _build_snake_slots(plan_segments: list[tuple[float, float]]) -> list[dict[str, float]]:
-    slots: list[dict[str, float]] = []
-    for index in range(24):
-        start_hour = float(index)
-        end_hour = start_hour + 1.0
-        overlaps: list[tuple[float, float]] = []
-        for segment_start, segment_end in plan_segments:
-            overlap_start = max(segment_start, start_hour)
-            overlap_end = min(segment_end, end_hour)
-            if overlap_end <= overlap_start:
-                continue
-            overlaps.append((overlap_start, overlap_end))
-
-        if overlaps:
-            coverage_start = min(start for start, _ in overlaps)
-            coverage_end = max(end for _, end in overlaps)
-            fill_start_ratio = _clamp(coverage_start - start_hour, 0.0, 1.0)
-            fill_end_ratio = _clamp(coverage_end - start_hour, 0.0, 1.0)
-            fill_ratio = _clamp(fill_end_ratio - fill_start_ratio, 0.0, 1.0)
-        else:
-            fill_start_ratio = 0.0
-            fill_ratio = 0.0
-
-        slots.append(
-            {
-                "index": index,
-                "startHour": start_hour,
-                "endHour": end_hour,
-                "fillRatio": fill_ratio,
-                "fillStartRatio": fill_start_ratio,
-            }
-        )
-
-    return slots
-
-
-def _build_timeline_summary(plan_segments: list[tuple[float, float]]) -> dict:
-    total_hours = 0.0
-    for start_hour, end_hour in plan_segments:
-        total_hours += max(0.0, end_hour - start_hour)
-    total_hours = _clamp(total_hours, 0.0, 24.0)
-    light_hours = _clamp(24.0 - total_hours, 0.0, 24.0)
-    return {
-        "plannedHours": total_hours,
-        "actualHours": total_hours,
-        "outageHours": total_hours,
-        "lightHours": light_hours,
-        "diffHours": 0.0,
-        "hasActualData": bool(plan_segments),
-    }
-
-
-def _merge_segments(segments: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    if not segments:
-        return []
-    sorted_segments = sorted(segments, key=lambda item: item[0])
-    merged: list[list[float]] = [[sorted_segments[0][0], sorted_segments[0][1]]]
-    for start_hour, end_hour in sorted_segments[1:]:
-        last_start, last_end = merged[-1]
-        if start_hour <= last_end:
-            merged[-1][1] = max(last_end, end_hour)
-        else:
-            merged.append([start_hour, end_hour])
-    return [(start, end) for start, end in merged]
-
-
-def _format_timeline_day_label(day_date):
-    weekday = WEEKDAY_NAMES_UA[day_date.weekday()] if day_date else "Невідомий день"
-    return f"{weekday} ({day_date.strftime('%d.%m')})"
-
-
-def _hour_fraction(date_obj: datetime) -> float:
-    return date_obj.hour + date_obj.minute / 60 + date_obj.second / 3600
-
-
-def _clamp(value: float, lower: float, upper: float) -> float:
-    if value < lower:
-        return lower
-    if value > upper:
-        return upper
-    return value
-
-
-async def create_schedule_screenshot(outages_info: dict, scope: Literal["today", "tomorrow"]) -> Path | None:
+async def create_schedule_screenshot(_outages_info: dict, scope: Literal["today", "tomorrow"]) -> Path | None:
     if not TIMELINE_SCREENSHOT_ENABLED:
         return None
 
@@ -416,23 +278,20 @@ async def create_schedule_screenshot(outages_info: dict, scope: Literal["today",
         logging.error("Інтерпретатор для скріншоту не знайдено: %s", python_exec)
         return None
 
-    payload = _build_timeline_payload(outages_info, scope)
-    if not payload:
-        logging.debug("Немає даних для скріншоту (scope=%s).", scope)
-        return None
-
     output_dir = Path(tempfile.gettempdir())
     output_path = output_dir / f"timeline-{scope}-{int(time.time())}.png"
     cmd = [
         str(python_exec),
         str(script_path),
-        "--json",
-        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
         "--output",
         str(output_path),
     ]
     if TIMELINE_SCREENSHOT_BASE_URL:
         cmd.extend(["--base-url", TIMELINE_SCREENSHOT_BASE_URL])
+    if NOTIFY_BOT_TOKEN:
+        cmd.extend(["--bot-token", NOTIFY_BOT_TOKEN])
+    if scope == "tomorrow":
+        cmd.extend(["--scope", "tomorrow"])
 
 
     try:
