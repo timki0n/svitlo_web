@@ -963,7 +963,7 @@ async def main():
         BOT_TOKEN,
         default=DefaultBotProperties(
             parse_mode="HTML",
-            disable_web_page_preview=True,
+            link_preview_is_disabled=True,
         ),
     )
     dp = Dispatcher()
