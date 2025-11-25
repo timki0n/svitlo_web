@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 from aiogram import Bot, Dispatcher, Router, types
 from aiogram.client.default import DefaultBotProperties
@@ -73,6 +73,24 @@ SCHEDULE_URL: Final[str] = "https://svitlo4u.online"
 
 def schedule_link(label: str) -> str:
     return f'<a href="{SCHEDULE_URL}">{label}</a>'
+
+
+_SCHEDULE_ANCHOR_RE = re.compile(rf'<a href="{re.escape(SCHEDULE_URL)}">(.*?)</a>')
+
+
+def _strip_schedule_anchors(text: str) -> str:
+    """Прибирає HTML-лінки schedule_link, лишаючи лише підпис."""
+    return _SCHEDULE_ANCHOR_RE.sub(r"\1", text)
+
+
+def _sanitize_web_payload(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {key: _sanitize_web_payload(value) for key, value in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_web_payload(value) for value in obj]
+    if isinstance(obj, str):
+        return _strip_schedule_anchors(obj)
+    return obj
 
 # ───────────────── глобальний стан ─────────────────
 router = Router()
@@ -371,7 +389,8 @@ async def web_notify(payload: dict):
     """
     if not WEB_NOTIFY_URL or not NOTIFY_BOT_TOKEN:
         return
-    body = json.dumps(payload).encode("utf-8")
+    sanitized_payload = _sanitize_web_payload(payload)
+    body = json.dumps(sanitized_payload).encode("utf-8")
     req = urllib.request.Request(
         WEB_NOTIFY_URL,
         data=body,
