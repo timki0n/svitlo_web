@@ -356,6 +356,7 @@ export function ScheduleChart({ days, isPowerOutNow = false }: ScheduleChartProp
         })();
 
         const isToday = dayDate ? dayDate.getTime() === todayStart.getTime() : false;
+        const isFutureDay = dayDate ? dayDate.getTime() > todayStart.getTime() : false;
 
         const placeholderMessage = hasSegments
           ? null
@@ -363,8 +364,8 @@ export function ScheduleChart({ days, isPowerOutNow = false }: ScheduleChartProp
             ? "Дані не знайдено"
             : "⌛ Очікуємо оновлення";
 
-        const limitedActualHours = Math.min(day.actualHours, 24);
-        const hasActualSummary = limitedActualHours > 0;
+        const plannedOutageHours = Math.max(0, Math.min(24, day.plannedHours));
+        const plannedLightHours = Math.max(0, 24 - plannedOutageHours);
 
         const stackOffsets = new Map<string, number>();
         // Допоміжні функції для побудови інтервалів "світло є" на базі фактичних відключень
@@ -443,6 +444,11 @@ export function ScheduleChart({ days, isPowerOutNow = false }: ScheduleChartProp
             }))
             .filter((r) => r.end > r.start)
         );
+        const displayedActualHours = mergedActual.reduce((total, range) => total + (range.end - range.start), 0);
+        const displayedLightHours = Math.max(actualWindowEnd - displayedActualHours, 0);
+        const hasActualData = day.segments.some((segment) => segment.source === "actual");
+        const hasActualSummary =
+          !isFutureDay && hasActualData && (displayedActualHours > 0 || displayedLightHours > 0);
         const presentRanges = invertRanges(mergedActual, actualWindowEnd);
 
         // Перетворюємо діапазони в сегменти з відповідними типами
@@ -560,22 +566,27 @@ export function ScheduleChart({ days, isPowerOutNow = false }: ScheduleChartProp
                   <h3 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
                     {day.title}
                   </h3>
-                  {hasActualSummary && (
+                  {isFutureDay ? (
+                    <div className="flex flex-wrap items-center gap-1 text-[11px] font-normal text-zinc-500 dark:text-zinc-400">
+                      <span>
+                        Світло має бути:{" "}
+                        <span style={{ color: "rgba(22, 163, 74, 0.7)" }}>{formatHoursWithUnits(plannedLightHours)}</span>
+                      </span>
+                    </div>
+                  ) : hasActualSummary ? (
                     <div className="flex flex-wrap items-center gap-1 text-[11px] font-normal text-zinc-500 dark:text-zinc-400">
                       <span>
                         Світло було:{" "}
-                        <span style={{ color: "rgba(22, 163, 74, 0.7)" }}>
-                          {formatHoursWithUnits(Math.max(24 - limitedActualHours, 0))}
-                        </span>
+                        <span style={{ color: "rgba(22, 163, 74, 0.7)" }}>{formatHoursWithUnits(displayedLightHours)}</span>
                       </span>
                       <span>
                         Світла не було:{" "}
                         <span style={{ color: "rgba(220, 38, 38, 0.7)" }}>
-                          {formatHoursWithUnits(limitedActualHours)}
+                          {formatHoursWithUnits(displayedActualHours)}
                         </span>
                       </span>
                     </div>
-                  )}
+                  ) : null}
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
                   <span>План: {formatHoursAsClock(day.plannedHours)}</span>
