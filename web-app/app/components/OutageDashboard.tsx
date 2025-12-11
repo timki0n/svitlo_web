@@ -16,9 +16,10 @@ export type PowerStatus = {
 type OutageDashboardProps = {
   weeks: WeekForChart[];
   status: PowerStatus;
+  initialTab?: "today" | "tomorrow";
 };
 
-export function OutageDashboard({ weeks, status }: OutageDashboardProps) {
+export function OutageDashboard({ weeks, status, initialTab }: OutageDashboardProps) {
   const toneClassName =
     status.tone === "warning"
       ? "border-amber-200 bg-amber-50 dark:border-amber-700/60 dark:bg-amber-900/20"
@@ -92,7 +93,7 @@ export function OutageDashboard({ weeks, status }: OutageDashboardProps) {
         id="section-today"
         className="scroll-mt-32 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950"
       >
-        <SnakeDayTimeline todayData={snakeTimelineToday} tomorrowData={snakeTimelineTomorrow} />
+        <SnakeDayTimeline todayData={snakeTimelineToday} tomorrowData={snakeTimelineTomorrow} initialTab={initialTab} />
       </div>
 
       <div

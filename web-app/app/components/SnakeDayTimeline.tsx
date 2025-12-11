@@ -37,6 +37,7 @@ export type SnakeTimelineData = {
 type SnakeDayTimelineProps = {
   todayData: SnakeTimelineData;
   tomorrowData: SnakeTimelineData;
+  initialTab?: "today" | "tomorrow";
 };
 
 const TOTAL_DAY_HOURS = 24;
@@ -71,8 +72,8 @@ function useCompactTimelineLayout() {
 
 type TabValue = "today" | "tomorrow";
 
-export function SnakeDayTimeline({ todayData, tomorrowData }: SnakeDayTimelineProps) {
-  const [activeTab, setActiveTab] = useState<TabValue>("today");
+export function SnakeDayTimeline({ todayData, tomorrowData, initialTab = "today" }: SnakeDayTimelineProps) {
+  const [activeTab, setActiveTab] = useState<TabValue>(initialTab);
   const data = activeTab === "today" ? todayData : tomorrowData;
   const isCompactLayout = useCompactTimelineLayout();
   const slotsPerRow = isCompactLayout ? COMPACT_SLOTS_PER_ROW : DEFAULT_SLOTS_PER_ROW;

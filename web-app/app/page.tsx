@@ -33,6 +33,7 @@ export default async function Home({ searchParams }: HomePageProps) {
   const requestedToken = resolvedSearchParams?.botToken ?? null;
   const isBotRequest = Boolean(BOT_ACCESS_TOKEN) && requestedToken === BOT_ACCESS_TOKEN;
   const bypassCache = isBotRequest;
+  const initialTab = resolvedSearchParams?.scope === "tomorrow" ? "tomorrow" : "today";
 
   const [schedules, actualOutages] = await Promise.all([
     getSchedules({ bypassCache }),
@@ -65,7 +66,7 @@ export default async function Home({ searchParams }: HomePageProps) {
       </div>
 
       <AutoRefresh />
-      <OutageDashboard weeks={chartWeeks} status={currentStatus} />
+      <OutageDashboard weeks={chartWeeks} status={currentStatus} initialTab={initialTab} />
       <section
         id="section-voltage"
         className="scroll-mt-32 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950"
