@@ -32,7 +32,6 @@ export default async function Home({ searchParams }: HomePageProps) {
   const resolvedSearchParams = await searchParams;
   const requestedToken = resolvedSearchParams?.botToken ?? null;
   const isBotRequest = Boolean(BOT_ACCESS_TOKEN) && requestedToken === BOT_ACCESS_TOKEN;
-  const scopeParam = resolvedSearchParams?.scope === "tomorrow" ? "tomorrow" : "today";
   const bypassCache = isBotRequest;
 
   const [schedules, actualOutages] = await Promise.all([
@@ -42,7 +41,6 @@ export default async function Home({ searchParams }: HomePageProps) {
 
   const chartWeeks = prepareWeeksForChart(schedules, actualOutages);
   const currentStatus = resolveCurrentStatus(actualOutages);
-  const timelineTargetDate = scopeParam === "tomorrow" ? addDays(new Date(), 1) : new Date();
   const backgroundImagePath =
     currentStatus.tone === "warning"
       ? "/backgrounds/4u_nolight.png"
@@ -67,7 +65,7 @@ export default async function Home({ searchParams }: HomePageProps) {
       </div>
 
       <AutoRefresh />
-      <OutageDashboard weeks={chartWeeks} status={currentStatus} timelineTargetDate={timelineTargetDate} />
+      <OutageDashboard weeks={chartWeeks} status={currentStatus} />
       <section
         id="section-voltage"
         className="scroll-mt-32 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950"

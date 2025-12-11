@@ -7,12 +7,33 @@ const navItems = [
   { id: "section-voltage", icon: "⚡", label: "Напруга" },
 ];
 
+function formatDateKey(date: Date) {
+  const year = date.getFullYear();
+  const month = (date.getMonth() + 1).toString().padStart(2, "0");
+  const day = date.getDate().toString().padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 export function SectionNav() {
   const handleScroll = (targetId: string) => {
-    const element = document.getElementById(targetId);
+    let elementId = targetId;
+
+    if (targetId === "section-today") {
+      elementId = "today-chart-blocks";
+    } else if (targetId === "section-week") {
+      const todayKey = formatDateKey(new Date());
+      elementId = `week-day-${todayKey}`;
+    }
+
+    const element = document.getElementById(elementId);
 
     if (element) {
       element.scrollIntoView({ behavior: "smooth", block: "start" });
+    } else if (targetId === "section-week" || targetId === "section-today") {
+      const fallbackElement = document.getElementById(targetId);
+      if (fallbackElement) {
+        fallbackElement.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
     }
   };
 

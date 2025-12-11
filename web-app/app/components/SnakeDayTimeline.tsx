@@ -35,7 +35,8 @@ export type SnakeTimelineData = {
 };
 
 type SnakeDayTimelineProps = {
-  data: SnakeTimelineData;
+  todayData: SnakeTimelineData;
+  tomorrowData: SnakeTimelineData;
 };
 
 const TOTAL_DAY_HOURS = 24;
@@ -68,7 +69,11 @@ function useCompactTimelineLayout() {
   return isCompact;
 }
 
-export function SnakeDayTimeline({ data }: SnakeDayTimelineProps) {
+type TabValue = "today" | "tomorrow";
+
+export function SnakeDayTimeline({ todayData, tomorrowData }: SnakeDayTimelineProps) {
+  const [activeTab, setActiveTab] = useState<TabValue>("today");
+  const data = activeTab === "today" ? todayData : tomorrowData;
   const isCompactLayout = useCompactTimelineLayout();
   const slotsPerRow = isCompactLayout ? COMPACT_SLOTS_PER_ROW : DEFAULT_SLOTS_PER_ROW;
   const rowsCount = Math.ceil(TOTAL_DAY_HOURS / slotsPerRow);
@@ -125,10 +130,36 @@ export function SnakeDayTimeline({ data }: SnakeDayTimelineProps) {
   const plannedLightHoursLabel = formatHoursWithUnits(Math.max(0, 24 - plannedOutageHours));
 
   return (
-    <div
-      data-testid="snake-day-timeline"
-      className={`relative overflow-hidden rounded-2xl border bg-linear-to-br px-5 py-6 text-zinc-50 shadow-[0_20px_60px_rgba(0,0,0,0.45)] ${toneClassName}`}
-    >
+    <div className="flex flex-col gap-4">
+      <div className="flex w-full overflow-hidden rounded-xl border border-zinc-700/50 bg-zinc-900/80 shadow-lg backdrop-blur-sm">
+        <button
+          type="button"
+          onClick={() => setActiveTab("today")}
+          className={`flex-1 px-4 py-2.5 text-sm font-semibold transition-all ${
+            activeTab === "today"
+              ? "bg-emerald-600/80 text-white shadow-inner"
+              : "text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200"
+          }`}
+        >
+          Сьогодні
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("tomorrow")}
+          className={`flex-1 px-4 py-2.5 text-sm font-semibold transition-all ${
+            activeTab === "tomorrow"
+              ? "bg-emerald-600/80 text-white shadow-inner"
+              : "text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200"
+          }`}
+        >
+          Завтра
+        </button>
+      </div>
+
+      <div
+        data-testid="snake-day-timeline"
+        className={`relative overflow-hidden rounded-2xl border bg-linear-to-br px-5 py-6 text-zinc-50 shadow-[0_20px_60px_rgba(0,0,0,0.45)] ${toneClassName}`}
+      >
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.15),transparent_55%)]" />
       <div className="relative z-10 flex flex-col gap-5">
         <header className="flex flex-wrap items-center justify-between gap-4">
@@ -149,7 +180,7 @@ export function SnakeDayTimeline({ data }: SnakeDayTimelineProps) {
 
         {showEmptyState ? (
           <div className="rounded-2xl border border-dashed border-amber-200/50 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-            На сьогодні графік відключень порожній.
+            {activeTab === "today" ? "На сьогодні" : "На завтра"} графік відключень порожній.
           </div>
         ) : (
           <div className="rounded-2xl border border-white/10 bg-white/5 p-4 shadow-inner backdrop-blur-sm">
@@ -174,7 +205,7 @@ export function SnakeDayTimeline({ data }: SnakeDayTimelineProps) {
           </div>
         )}
 
-        <div className={`flex flex-col gap-1.5 ${isEmergency ? "opacity-30" : ""}`}>
+        <div id="today-chart-blocks" className={`scroll-mt-32 flex flex-col gap-1.5 ${isEmergency ? "opacity-30" : ""}`}>
           {rows.map((row) => (
             <SnakeRow key={row.rowIndex} slots={row.rowSlots} nowPercent={row.nowPercent} />
           ))}
@@ -196,6 +227,7 @@ export function SnakeDayTimeline({ data }: SnakeDayTimelineProps) {
           </p>
         </div>
       ) : null}
+      </div>
     </div>
   );
 }

@@ -543,7 +543,7 @@ export function ScheduleChart({ days, isPowerOutNow = false }: ScheduleChartProp
               nowHourValue < segment.endHour
           );
         const isOutageNow = isToday && (hasActualOutageNow || isPowerOutNow);
-        const cardClassName = `relative overflow-hidden rounded-lg border border-zinc-200 bg-white p-2 shadow-sm transition-shadow duration-500 dark:border-zinc-800 dark:bg-zinc-950 ${
+        const cardClassName = `scroll-mt-32 relative overflow-hidden rounded-lg border border-zinc-200 bg-white p-2 shadow-sm transition-shadow duration-500 dark:border-zinc-800 dark:bg-zinc-950 ${
           isToday
             ? isOutageNow
               ? "border-rose-300 bg-gradient-to-r from-rose-50 via-white to-rose-50 shadow-[0_0_35px_rgba(244,63,94,0.35)] dark:border-rose-500 dark:from-rose-900/25 dark:via-zinc-950 dark:to-rose-900/25 dark:shadow-[0_0_35px_rgba(244,63,94,0.28)]"
@@ -552,7 +552,7 @@ export function ScheduleChart({ days, isPowerOutNow = false }: ScheduleChartProp
         }`;
 
         return (
-          <article key={day.key} className={cardClassName}>
+          <article key={day.key} id={`week-day-${day.key}`} className={cardClassName}>
             {isToday && (
               <div
                 className={`pointer-events-none absolute -inset-8 z-0 md:animate-pulse blur-3xl ${

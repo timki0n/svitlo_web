@@ -16,10 +16,9 @@ export type PowerStatus = {
 type OutageDashboardProps = {
   weeks: WeekForChart[];
   status: PowerStatus;
-  timelineTargetDate?: Date;
 };
 
-export function OutageDashboard({ weeks, status, timelineTargetDate }: OutageDashboardProps) {
+export function OutageDashboard({ weeks, status }: OutageDashboardProps) {
   const toneClassName =
     status.tone === "warning"
       ? "border-amber-200 bg-amber-50 dark:border-amber-700/60 dark:bg-amber-900/20"
@@ -38,12 +37,13 @@ export function OutageDashboard({ weeks, status, timelineTargetDate }: OutageDas
       : "radial-gradient(circle at 50% 50%, rgba(34, 197, 94, 0.33), transparent 75%)";
 
   const now = new Date(status.currentISO);
-  const timelineDate = timelineTargetDate ?? now;
+  const tomorrow = addDays(now, 1);
   const since = status.sinceISO ? new Date(status.sinceISO) : null;
   const durationLabel = since ? formatElapsedDuration(since, now) : null;
   const durationPrefix = status.tone === "ok" ? "Світло є вже" : "Відключення триває";
   const planSummary = resolvePlanSummary(weeks, now);
-  const snakeTimeline = resolveSnakeTimeline(weeks, now, timelineDate);
+  const snakeTimelineToday = resolveSnakeTimeline(weeks, now, now);
+  const snakeTimelineTomorrow = resolveSnakeTimeline(weeks, now, tomorrow);
   const gaugeData = resolveGaugeState(weeks, status, now);
   const shouldShowDurationLine = durationLabel && gaugeData.variant === "none";
 
@@ -92,7 +92,7 @@ export function OutageDashboard({ weeks, status, timelineTargetDate }: OutageDas
         id="section-today"
         className="scroll-mt-32 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950"
       >
-        <SnakeDayTimeline data={snakeTimeline} />
+        <SnakeDayTimeline todayData={snakeTimelineToday} tomorrowData={snakeTimelineTomorrow} />
       </div>
 
       <div
