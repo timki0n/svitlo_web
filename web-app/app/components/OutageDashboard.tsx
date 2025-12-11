@@ -50,7 +50,8 @@ export function OutageDashboard({ weeks, status, timelineTargetDate }: OutageDas
   return (
     <section className="mx-auto flex w-full max-w-5xl flex-col gap-8">
       <div
-        className={`relative overflow-hidden rounded-2xl border text-center transition ${toneClassName} ${shadowClassName}`}
+        id="section-status"
+        className={`relative scroll-mt-32 overflow-hidden rounded-2xl border text-center transition ${toneClassName} ${shadowClassName}`}
       >
         <Settings />
         <div
@@ -87,11 +88,17 @@ export function OutageDashboard({ weeks, status, timelineTargetDate }: OutageDas
         </div>
       </div>
 
-      <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+      <div
+        id="section-today"
+        className="scroll-mt-32 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950"
+      >
         <SnakeDayTimeline data={snakeTimeline} />
       </div>
 
-      <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+      <div
+        id="section-week"
+        className="scroll-mt-32 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950"
+      >
         <ScheduleChartSection weeks={weeks} isPowerOutNow={status.tone === "warning"} />
       </div>
     </section>

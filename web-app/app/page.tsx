@@ -9,6 +9,8 @@ import {
   type ActualOutageRow,
   type ScheduleRow,
 } from "@/lib/db";
+import { SectionNav } from "@/app/components/SectionNav";
+import { VoltageChartLazy } from "@/app/components/VoltageChartLazy";
 
 const BOT_ACCESS_TOKEN = process.env.NOTIFY_BOT_TOKEN ?? "";
 
@@ -37,6 +39,7 @@ export default async function Home({ searchParams }: HomePageProps) {
     getSchedules({ bypassCache }),
     getActualOutages({ bypassCache }),
   ]);
+
   const chartWeeks = prepareWeeksForChart(schedules, actualOutages);
   const currentStatus = resolveCurrentStatus(actualOutages);
   const timelineTargetDate = scopeParam === "tomorrow" ? addDays(new Date(), 1) : new Date();
@@ -46,7 +49,9 @@ export default async function Home({ searchParams }: HomePageProps) {
       : "/backgrounds/4u_light.png";
 
   return (
-    <main className="relative flex min-h-screen flex-col gap-10 bg-zinc-50/60 px-6 py-12 font-sans text-zinc-900 backdrop-blur-[1px] dark:bg-black/70 dark:text-zinc-50">
+    <>
+      <SectionNav />
+      <main className="relative flex min-h-screen flex-col gap-10 bg-zinc-50/60 px-6 py-12 pb-28 font-sans text-zinc-900 backdrop-blur-[1px] dark:bg-black/70 dark:text-zinc-50 md:pb-16">
       <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
         <img
           src={backgroundImagePath}
@@ -63,7 +68,14 @@ export default async function Home({ searchParams }: HomePageProps) {
 
       <AutoRefresh />
       <OutageDashboard weeks={chartWeeks} status={currentStatus} timelineTargetDate={timelineTargetDate} />
+      <section
+        id="section-voltage"
+        className="scroll-mt-32 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950"
+      >
+        <VoltageChartLazy />
+      </section>
     </main>
+    </>
   );
 }
 
