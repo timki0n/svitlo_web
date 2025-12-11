@@ -160,6 +160,16 @@ def fmt_duration(seconds: float) -> str:
     except (OverflowError, ValueError):
         return "невідомо"
 
+def format_duration(start: datetime, end: datetime) -> str:
+    """Format outage duration as 'X год.' or 'X год. Y хв.'"""
+    delta = end - start
+    total_minutes = int(delta.total_seconds() / 60)
+    hours = total_minutes // 60
+    minutes = total_minutes % 60
+    if minutes == 0:
+        return f"{hours} год."
+    return f"{hours} год. {minutes} хв."
+
 def build_today_message(outages_info: dict) -> str:
     date_value = outages_info.get("date")
     date_str = date_value.strftime("%d.%m.%Y") if hasattr(date_value, "strftime") else str(date_value)
@@ -192,8 +202,8 @@ def build_today_message(outages_info: dict) -> str:
     for idx, outage in enumerate(outages, 1):
         start_str = outage["start"].strftime("%H:%M")
         end_str = outage["end"].strftime("%H:%M")
-        type_label = "Планове" if outage["type"] == "Definite" else outage["type"]
-        lines.append(f"{idx}. {start_str} – {end_str} ({type_label})")
+        duration_label = format_duration(outage["start"], outage["end"])
+        lines.append(f"{idx}. {start_str} – {end_str} ({duration_label})")
 
     return "\n".join(lines)
 
@@ -574,8 +584,8 @@ async def cmd_tomorrow(m: Message):
         for idx, outage in enumerate(outages, 1):
             start_str = outage["start"].strftime("%H:%M")
             end_str = outage["end"].strftime("%H:%M")
-            type_label = "Планове" if outage["type"] == "Definite" else outage["type"]
-            message += f"{idx}. {start_str} – {end_str} ({type_label})\n"
+            duration_label = format_duration(outage["start"], outage["end"])
+            message += f"{idx}. {start_str} – {end_str} ({duration_label})\n"
         
         await m.answer(message)
     except Exception as e:
