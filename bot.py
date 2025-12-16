@@ -56,6 +56,7 @@ def _parse_chat_targets_env(raw: str | None) -> tuple[tuple[int, int | None], ..
 
 ALERT_CHAT_TARGETS: Final[tuple[tuple[int, int | None], ...]] = _parse_chat_targets_env(os.getenv("ALERT_CHAT_ID"))
 BLOCKED_CHAT_TARGETS: Final[tuple[tuple[int, int | None], ...]] = _parse_chat_targets_env(os.getenv("BLOCK_ALERT_CHAT_ID"))
+SILENT_CHAT_TARGETS: Final[tuple[tuple[int, int | None], ...]] = _parse_chat_targets_env(os.getenv("SILENT_CHAT_ID"))
 UDP_PORT = int(os.getenv("UDP_PORT", "5005"))
 DEFAULT_THRESHOLD_SEC = float(os.getenv("THRESHOLD_SEC", "6"))
 SCHEDULE_POLL_INTERVAL_SEC = 60
@@ -122,6 +123,32 @@ def _is_chat_blocked(chat_id: int, thread_id: int | None) -> bool:
         if blocked_thread_id == thread_id:
             return True
     return False
+
+
+def _is_chat_silent(chat_id: int, thread_id: int | None) -> bool:
+    """Перевіряє, чи всі повідомлення (крім адмінів) мають видалятися у цьому чаті."""
+    if not SILENT_CHAT_TARGETS:
+        return False
+    for silent_chat_id, silent_thread_id in SILENT_CHAT_TARGETS:
+        if silent_chat_id != chat_id:
+            continue
+        if silent_thread_id is None:
+            if thread_id is None:
+                return True
+            continue
+        if silent_thread_id == thread_id:
+            return True
+    return False
+
+
+async def _is_user_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
+    """Перевіряє, чи є користувач адміністратором чату."""
+    try:
+        member = await bot.get_chat_member(chat_id, user_id)
+        return member.status in ("creator", "administrator")
+    except Exception:
+        return False
+
 
 async def _skip_if_blocked(message: Message) -> bool:
     """
@@ -635,6 +662,32 @@ async def cmd_testscreenshot(m: Message, command: CommandObject):
             await m.answer(f"⚠️ Скріншот не згенеровано. Повідомлення:\n\n{message_body}")
     finally:
         _cleanup_temp_file(screenshot_path)
+
+
+@router.message()
+async def handle_silent_chat_messages(m: Message):
+    """Видаляє всі повідомлення у silent чатах (крім адміністраторів та адмін-чату/юзера)."""
+    chat = m.chat
+    if chat is None:
+        return
+    # В адмін-чаті дозволяємо писати
+    if chat.id == ADMIN_LOG_CHAT_ID:
+        return
+    thread_id = m.message_thread_id
+    if not _is_chat_silent(chat.id, thread_id):
+        return
+    # Адміни та адмін-юзер можуть писати
+    user = m.from_user
+    if user:
+        if user.id == ADMIN_LOG_CHAT_ID:
+            return
+        if await _is_user_admin(m.bot, chat.id, user.id):
+            return
+    try:
+        await m.delete()
+    except Exception as e:
+        logging.warning("Не вдалося видалити повідомлення у silent chat=%s thread=%s: %s", chat.id, thread_id, e)
+
 
 # ───────────────── background monitor ─────────────────
 async def schedule_monitor(bot: Bot):
