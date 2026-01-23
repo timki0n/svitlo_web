@@ -75,6 +75,12 @@ class Database:
         """
         return await asyncio.to_thread(self._get_active_outage_sync)
 
+    async def get_last_restore_ts(self) -> float | None:
+        """
+        Повертає end_ts останнього закритого відключення (час відновлення світла).
+        """
+        return await asyncio.to_thread(self._get_last_restore_ts_sync)
+
     async def get_push_subscriptions_count(self) -> int:
         """
         Повертає кількість PWA підписок із окремої БД push_subs.db.
@@ -251,6 +257,19 @@ class Database:
                 """
             ).fetchone()
             return dict(row) if row else None
+
+    def _get_last_restore_ts_sync(self) -> float | None:
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                """
+                SELECT end_ts
+                FROM outages
+                WHERE end_ts IS NOT NULL
+                ORDER BY end_ts DESC
+                LIMIT 1;
+                """
+            ).fetchone()
+            return float(row["end_ts"]) if row else None
 
     @staticmethod
     def _normalize_date(value: dt.date | dt.datetime | str) -> str:

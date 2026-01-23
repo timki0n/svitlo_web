@@ -173,16 +173,30 @@ def fmt_dt(ts: float) -> str:
     except (OverflowError, OSError, ValueError):
         return "невідомо"
 
-def fmt_duration(seconds: float) -> str:
+def fmt_duration_long(seconds: float) -> str:
+    """Форматує тривалість з днями, годинами, хвилинами."""
     try:
         seconds = int(seconds)
-        h = seconds // 3600
-        m = (seconds % 3600) // 60
-        s = seconds % 60
+        days = seconds // 86400
+        hours = (seconds % 86400) // 3600
+        minutes = (seconds % 3600) // 60
         parts = []
-        if h: parts.append(f"{h}h")
-        if m: parts.append(f"{m}m")
-        parts.append(f"{s}s")
+        if days == 1:
+            parts.append("1 день")
+        elif days >= 2 and days <= 4:
+            parts.append(f"{days} дні")
+        elif days >= 5:
+            parts.append(f"{days} днів")
+        if hours == 1:
+            parts.append("1 год.")
+        elif hours >= 2:
+            parts.append(f"{hours} год.")
+        if minutes == 1:
+            parts.append("1 хв.")
+        elif minutes >= 2:
+            parts.append(f"{minutes} хв.")
+        if not parts:
+            return "менше хвилини"
         return " ".join(parts)
     except (OverflowError, ValueError):
         return "невідомо"
@@ -389,6 +403,11 @@ def _cleanup_temp_file(path: Path | None):
         path.unlink()
 
 
+# Retry налаштування для відправки повідомлень (коли інтернет ще не відновився)
+NOTIFY_RETRY_DELAYS: Final[tuple[float, ...]] = (5, 10, 15, 30, 60, 120, 180)  # секунди між спробами
+NOTIFY_MAX_TOTAL_TIME: Final[float] = 1800.0  # максимальний час очікування (30 хв)
+
+
 async def notify(bot: Bot, text: str, photo_path: str | None = None):
     if not ALERT_CHAT_TARGETS:
         return
@@ -401,21 +420,36 @@ async def notify(bot: Bot, text: str, photo_path: str | None = None):
             logging.warning("Файл для вкладення не знайдено: %s", photo_path)
 
     for chat_id, thread_id in ALERT_CHAT_TARGETS:
-        try:
-            if photo_candidate:
-                file_input = types.FSInputFile(str(photo_candidate))
-                if thread_id is None:
-                    await bot.send_photo(chat_id, file_input, caption=text)
+        start_time = time.time()
+        attempt = 0
+        while True:
+            try:
+                if photo_candidate:
+                    file_input = types.FSInputFile(str(photo_candidate))
+                    if thread_id is None:
+                        await bot.send_photo(chat_id, file_input, caption=text)
+                    else:
+                        await bot.send_photo(chat_id, file_input, caption=text, message_thread_id=thread_id)
                 else:
-                    await bot.send_photo(chat_id, file_input, caption=text, message_thread_id=thread_id)
-            else:
-                if thread_id is None:
-                    await bot.send_message(chat_id, text)
-                else:
-                    await bot.send_message(chat_id, text, message_thread_id=thread_id)
-            await asyncio.sleep(0.05)  # невеликий тротлінг між повідомленнями
-        except Exception as e:
-            logging.error("send_message failed (%s): %s", chat_id, e)
+                    if thread_id is None:
+                        await bot.send_message(chat_id, text)
+                    else:
+                        await bot.send_message(chat_id, text, message_thread_id=thread_id)
+                await asyncio.sleep(0.05)  # невеликий тротлінг між повідомленнями
+                break  # успішно відправлено
+            except Exception as e:
+                elapsed = time.time() - start_time
+                if elapsed >= NOTIFY_MAX_TOTAL_TIME:
+                    logging.error("notify: вичерпано час очікування для chat=%s: %s", chat_id, e)
+                    break
+                delay = NOTIFY_RETRY_DELAYS[min(attempt, len(NOTIFY_RETRY_DELAYS) - 1)]
+                logging.warning(
+                    "notify: спроба %d не вдалася для chat=%s, повтор через %.0fs: %s",
+                    attempt + 1, chat_id, delay, e
+                )
+                await asyncio.sleep(delay)
+                attempt += 1
+
 
 async def web_notify(payload: dict):
     """
@@ -423,24 +457,47 @@ async def web_notify(payload: dict):
       - очищає відповідний кеш
       - розсилає SSE у відкриті вкладки
       - надсилає PWA push-нотифікацію
+    З retry логікою на випадок відсутності інтернету.
     """
     if not WEB_NOTIFY_URL or not NOTIFY_BOT_TOKEN:
         return
     sanitized_payload = _sanitize_web_payload(payload)
     body = json.dumps(sanitized_payload).encode("utf-8")
-    req = urllib.request.Request(
-        WEB_NOTIFY_URL,
-        data=body,
-        headers={"Content-Type": "application/json", "x-bot-token": NOTIFY_BOT_TOKEN},
-        method="POST",
-    )
-    def _do():
-        try:
-            with urllib.request.urlopen(req, timeout=2.5) as _:
-                return
-        except urllib.error.URLError:
-            return
-    await asyncio.to_thread(_do)
+
+    start_time = time.time()
+    attempt = 0
+    while True:
+        req = urllib.request.Request(
+            WEB_NOTIFY_URL,
+            data=body,
+            headers={"Content-Type": "application/json", "x-bot-token": NOTIFY_BOT_TOKEN},
+            method="POST",
+        )
+        def _do():
+            try:
+                with urllib.request.urlopen(req, timeout=5.0) as _:
+                    return None  # успіх
+            except urllib.error.URLError as e:
+                return e
+            except Exception as e:
+                return e
+
+        error = await asyncio.to_thread(_do)
+        if error is None:
+            break  # успішно відправлено
+
+        elapsed = time.time() - start_time
+        if elapsed >= NOTIFY_MAX_TOTAL_TIME:
+            logging.error("web_notify: вичерпано час очікування: %s", error)
+            break
+
+        delay = NOTIFY_RETRY_DELAYS[min(attempt, len(NOTIFY_RETRY_DELAYS) - 1)]
+        logging.warning(
+            "web_notify: спроба %d не вдалася, повтор через %.0fs: %s",
+            attempt + 1, delay, error
+        )
+        await asyncio.sleep(delay)
+        attempt += 1
 
 # ───────────────── Telegram handlers ─────────────────
 @router.message(Command("start"))
@@ -926,18 +983,28 @@ async def power_monitor(bot: Bot):
                 if active_outage is None:
                     start_ts = outage_start_candidate if outage_start_candidate is not None else now
                     await db.log_outage_start(start_ts)
+                    # Отримуємо час останнього відновлення для підрахунку тривалості світла
+                    uptime_line = ""
+                    try:
+                        last_restore_ts = await db.get_last_restore_ts()
+                        if last_restore_ts is not None:
+                            uptime_seconds = max(0.0, start_ts - last_restore_ts)
+                            uptime_line = f"Час зі світлом: {fmt_duration_long(uptime_seconds)}"
+                    except Exception as e:
+                        logging.error("Failed to get last restore ts: %s", e)
                     try:
                         now_dt = datetime.fromtimestamp(now, tz=TZ)
                         restore_msg = await asyncio.to_thread(yasno.get_nearest_restore_message, now_dt)
-                        await notify(
-                            bot,
-                            f"🔔⚠️ Світло ЗНИКЛО.\n{restore_msg}"
-                        )
+                        body_lines = ["🔔⚠️ Світло ЗНИКЛО."]
+                        if uptime_line:
+                            body_lines.append(uptime_line)
+                        body_lines.append(restore_msg)
+                        await notify(bot, "\n".join(body_lines))
                         asyncio.create_task(web_notify({
                             "type": "power_outage_started",
                             "category": "actual",
                             "title": "⚠️ Світло зникло",
-                            "body": restore_msg,
+                            "body": "\n".join([uptime_line, restore_msg] if uptime_line else [restore_msg]),
                             "data": {
                                 "networkState": "off",
                                 "tag": "power-status",
@@ -946,12 +1013,15 @@ async def power_monitor(bot: Bot):
                         }))
                     except Exception as e:
                         logging.error("Failed to get restore message: %s", e)
-                        await notify(bot, "⚠️ Світло ЗНИКЛО.")
+                        body_lines = ["⚠️ Світло ЗНИКЛО."]
+                        if uptime_line:
+                            body_lines.append(uptime_line)
+                        await notify(bot, "\n".join(body_lines))
                         asyncio.create_task(web_notify({
                             "type": "power_outage_started",
                             "category": "actual",
                             "title": "Світло зникло",
-                            "body": "",
+                            "body": uptime_line,
                             "data": {
                                 "networkState": "off",
                                 "tag": "power-status",
@@ -970,7 +1040,7 @@ async def power_monitor(bot: Bot):
                         logging.error("Failed to get nearest outage message: %s", e)
                     body_lines = [
                         "🔔✅ Світло ВІДНОВЛЕНО.",
-                        f"Час без світла: {fmt_duration(downtime)}",
+                        f"Час без світла: {fmt_duration_long(downtime)}",
                     ]
                     if nearest_msg:
                         body_lines.append(nearest_msg)

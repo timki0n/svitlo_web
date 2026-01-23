@@ -186,10 +186,22 @@ export function VoltageChart({ stats }: VoltageChartProps) {
     []
   );
 
+  // Актуальне значення: беремо лише за останні 2 хвилини
   const latestValue = useMemo(() => {
-    const item = [...withGaps].reverse().find((entry) => entry.voltage != null);
-    return item ?? null;
-  }, [withGaps]);
+    if (!stats) return null;
+    const now = Date.now();
+    const cutoffMs = now - 2 * 60 * 1000; // 2 хвилини
+
+    const recentEntries = stats.entries
+      .map((entry) => ({
+        ts: new Date(entry.timestamp).getTime(),
+        voltage: entry.voltage,
+      }))
+      .filter((item) => Number.isFinite(item.ts) && item.ts >= cutoffMs && item.voltage != null)
+      .sort((a, b) => b.ts - a.ts); // від найновішого до найстарішого
+
+    return recentEntries[0] ?? null;
+  }, [stats]);
 
   if (!stats) {
     return (
@@ -233,9 +245,13 @@ export function VoltageChart({ stats }: VoltageChartProps) {
       </header>
 
       <div className="mb-3 flex flex-wrap items-center gap-3 text-sm text-zinc-700 dark:text-zinc-200">
-        <span className="inline-flex items-center gap-2 rounded-full border border-emerald-500/50 bg-emerald-500/10 px-3 py-1 text-emerald-700 dark:border-emerald-400/40 dark:bg-emerald-400/10 dark:text-emerald-100">
+        <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 ${
+          latestValue
+            ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:border-emerald-400/40 dark:bg-emerald-400/10 dark:text-emerald-100"
+            : "border-zinc-400/50 bg-zinc-400/10 text-zinc-600 dark:border-zinc-500/40 dark:bg-zinc-500/10 dark:text-zinc-400"
+        }`}>
           <span className="font-semibold">
-            {latestValue ? `Зараз: ${formatCompact(latestValue.voltage)} В` : "—"}
+            {latestValue ? `Зараз: ${formatCompact(latestValue.voltage)} В` : "Немає актуальних даних"}
           </span>
         </span>
       </div>

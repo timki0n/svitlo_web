@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { VoltageChart } from "./VoltageChart";
 import type { VoltageStats } from "@/lib/homeassistant";
+
+const REFRESH_INTERVAL_MS = 30_000; // 30 секунд, як і AutoRefresh
 
 type FetchState =
   | { status: "idle" | "loading"; data: null }
@@ -21,9 +23,11 @@ async function fetchVoltage(abortSignal?: AbortSignal) {
 export function VoltageChartLazy() {
   const [state, setState] = useState<FetchState>({ status: "loading", data: null });
 
-  useEffect(() => {
-    const controller = new AbortController();
-    setState({ status: "loading", data: null });
+  const doFetch = useCallback((controller: AbortController, isInitial: boolean) => {
+    // Не показуємо loading при оновленні, лише при першому завантаженні
+    if (isInitial) {
+      setState({ status: "loading", data: null });
+    }
 
     fetchVoltage(controller.signal)
       .then((data) => setState({ status: "success", data }))
@@ -31,9 +35,45 @@ export function VoltageChartLazy() {
         if (error.name === "AbortError") return;
         setState({ status: "error", data: null, message: "Не вдалося отримати дані" });
       });
-
-    return () => controller.abort();
   }, []);
+
+  useEffect(() => {
+    let controller = new AbortController();
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+    
+    // Початкове завантаження
+    doFetch(controller, true);
+
+    // Інтервальне оновлення (синхронізовано з AutoRefresh)
+    const scheduleNext = () => {
+      if (cancelled) return;
+
+      const remainder = Date.now() % REFRESH_INTERVAL_MS;
+      const delay = remainder === 0 ? REFRESH_INTERVAL_MS : REFRESH_INTERVAL_MS - remainder;
+
+      timeoutId = setTimeout(() => {
+        if (cancelled) return;
+        
+        // Скасовуємо попередній запит якщо є
+        controller.abort();
+        controller = new AbortController();
+        
+        doFetch(controller, false);
+        scheduleNext();
+      }, delay);
+    };
+
+    scheduleNext();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [doFetch]);
 
   const showLoader = state.status === "loading";
   const showError = state.status === "error";
