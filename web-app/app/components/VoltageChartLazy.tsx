@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { VoltageChart } from "./VoltageChart";
 import type { VoltageStats } from "@/lib/homeassistant";
 
-const REFRESH_INTERVAL_MS = 30_000; // 30 секунд, як і AutoRefresh
+const REFRESH_INTERVAL_MS = 60_000; // 1 хвилина, як і AutoRefresh
 
 type FetchState =
   | { status: "idle" | "loading"; data: null }

@@ -251,7 +251,7 @@ export function VoltageChart({ stats }: VoltageChartProps) {
             : "border-zinc-400/50 bg-zinc-400/10 text-zinc-600 dark:border-zinc-500/40 dark:bg-zinc-500/10 dark:text-zinc-400"
         }`}>
           <span className="font-semibold">
-            {latestValue ? `Зараз: ${formatCompact(latestValue.voltage)} В` : "Немає актуальних даних"}
+            {latestValue ? `Зараз: ${formatCompact(latestValue.voltage)} В` : "—"}
           </span>
         </span>
       </div>

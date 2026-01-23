@@ -612,7 +612,28 @@ async def cmd_status(m: Message):
 
     secs = listener.seconds_since_last_packet()
     power_down = secs > threshold_sec
-    state = "❌ світла немає" if power_down else "✅ світло є"
+    now_ts = time.time()
+
+    # Визначаємо тривалість поточного стану
+    duration_str = ""
+    try:
+        if power_down:
+            active_outage = await db.get_active_outage()
+            if active_outage and active_outage.get("start_ts"):
+                duration = now_ts - active_outage["start_ts"]
+                duration_str = fmt_duration_long(duration)
+        else:
+            last_restore_ts = await db.get_last_restore_ts()
+            if last_restore_ts:
+                duration = now_ts - last_restore_ts
+                duration_str = fmt_duration_long(duration)
+    except Exception as e:
+        logging.error("cmd_status duration error: %s", e)
+
+    if power_down:
+        state = f"❌ світла немає {duration_str}" if duration_str else "❌ світла немає"
+    else:
+        state = f"✅ світло є вже {duration_str}" if duration_str else "✅ світло є"
     schedule_text = restore_text if power_down else outage_text
 
     await m.answer(f"{state}\n{schedule_text}")
