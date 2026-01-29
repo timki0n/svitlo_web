@@ -31,7 +31,7 @@ from storage import db
 # ───────────────── env / config ─────────────────
 load_dotenv()  # підтягуємо .env із поточної директорії
 
-YASNO_GROUP = os.getenv("YASNO_GROUP", "6.2")
+YASNO_GROUP = os.getenv("YASNO_GROUP", "12.1")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_LOG_CHAT_ID = int(os.getenv("ADMIN_LOG_CHAT_ID", "396952666"))

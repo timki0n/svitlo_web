@@ -47,9 +47,9 @@ class YasnoOutages:
         # Допуск раннього старту планового відключення
         self.early_start_grace_minutes = 45
         # Скільки часу після планового старту ще показувати повідомлення «мало відбутися»
-        self.missed_start_grace_minutes = 60
+        self.missed_start_grace_minutes = 90
         # Допустима затримка відновлення перед повідомленням «мало відновитися»
-        self.restore_delay_grace_minutes = 60
+        self.restore_delay_grace_minutes = 90
 
     # ---------- HTTP ----------
     def fetch(self) -> Dict[str, Any]:
@@ -175,6 +175,17 @@ class YasnoOutages:
                 next_idx += 1
             return f"За {schedule_link('графіком')} світло має відновитися о {extended_end.strftime('%H:%M')}."
 
+        # Якщо є майбутній інтервал, який скоро почнеться — показуємо коли він закінчиться
+        # (пріоритет майбутнього над "мало відновитися")
+        future_slots = [(s, e) for s, e in slots if s > now]
+        if future_slots:
+            future_slots.sort(key=lambda t: t[0])
+            nearest_future_start, nearest_future_end = future_slots[0]
+            time_until_start = nearest_future_start - now
+            # Якщо наступне відключення почнеться в межах grace period — показуємо його кінець
+            if time_until_start <= dt.timedelta(minutes=self.restore_delay_grace_minutes):
+                return f"За {schedule_link('графіком')} світло має відновитися о {nearest_future_end.strftime('%H:%M')}."
+
         if past_outages:
             latest_end = max(past_outages, key=lambda t: t[1])[1]
             delay = now - latest_end
@@ -266,27 +277,47 @@ class YasnoOutages:
                     starts.append(start_dt.astimezone(self.tz))
             return starts
 
+        def _past_starts(day_block: Dict[str, Any], fallback_date: dt.date) -> List[dt.datetime]:
+            """Збирає минулі старти відключень для перевірки 'мало відбутися'."""
+            if day_block.get("status") != "ScheduleApplies":
+                return []
+            date_val = dt.datetime.fromisoformat(day_block.get("date")).date() if day_block.get("date") else fallback_date
+            starts: List[dt.datetime] = []
+            for slot in self._parse_slots(day_block):
+                if not slot.is_outage:
+                    continue
+                start_dt, end_dt = slot.as_time_range(date_val, self.tz)
+                # Минулий старт: start вже пройшов, але end ще в grace period
+                if start_dt <= now:
+                    starts.append(start_dt.astimezone(self.tz))
+            return starts
+
         future_outages = sorted(
             _future_starts(today_block, now.date()) +
             _future_starts(tomorrow_block, now.date() + dt.timedelta(days=1))
         )
 
-        nearest_outage = self.get_nearest_outage(now=now, data_override=data_override)
-        if nearest_outage is not None:
-            nearest_outage = nearest_outage.astimezone(self.tz)
-            if now >= nearest_outage:
-                elapsed = now - nearest_outage
-                if elapsed <= dt.timedelta(minutes=self.missed_start_grace_minutes):
-                    return f"Відключення мало відбутися о {nearest_outage.strftime('%H:%M')}, очікуйте"
-
         if today_block.get("status") == "EmergencyShutdowns":
             return f"🚨 Діють екстрені відключення. {schedule_link('Графік')} не діє."
 
-        if not future_outages:
-            return "💡 Сьогодні відключень не передбачено"
+        # Пріоритет: спочатку показуємо майбутні відключення
+        if future_outages:
+            next_outage = future_outages[0]
+            time_str = next_outage.strftime('%H:%M')
+            if next_outage.date() == (now.date() + dt.timedelta(days=1)):
+                return f"Найближче відключення завтра о {time_str}"
+            return f"Найближче відключення о {time_str}"
 
-        next_outage = future_outages[0]
-        time_str = next_outage.strftime('%H:%M')
-        if next_outage.date() == (now.date() + dt.timedelta(days=1)):
-            return f"Найближче відключення завтра о {time_str}"
-        return f"Найближче відключення о {time_str}"
+        # Якщо майбутніх немає — перевіряємо минулі "мало відбутися"
+        past_starts = sorted(
+            _past_starts(today_block, now.date()) +
+            _past_starts(tomorrow_block, now.date() + dt.timedelta(days=1)),
+            reverse=True  # найновіший перший
+        )
+        if past_starts:
+            latest_start = past_starts[0]
+            elapsed = now - latest_start
+            if elapsed <= dt.timedelta(minutes=self.missed_start_grace_minutes):
+                return f"Відключення мало відбутися о {latest_start.strftime('%H:%M')}, очікуйте"
+
+        return "💡 Сьогодні відключень не передбачено"
