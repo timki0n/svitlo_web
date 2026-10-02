@@ -33,7 +33,7 @@ def _missing_schedule_message(today_status: str, tomorrow_status: str) -> str:
 
 
 def _off_schedule_message() -> str:
-    return f"Відключення поза {schedule_link('графіком')}/можливо аварійні."
+    return "⚠️ Відключення поза графіком/можливо аварійні."
 
 
 @dataclass(frozen=True)
