@@ -23,7 +23,13 @@ from aiogram.filters import Command, CommandObject
 
 from dotenv import load_dotenv
 from udp_listener import UDPListener
-from yasno_outages import YasnoOutages
+from yasno_outages import (
+    STATUS_EMERGENCY_SHUTDOWNS,
+    STATUS_NO_OUTAGES,
+    STATUS_SCHEDULE_APPLIES,
+    STATUS_WAITING_FOR_SCHEDULE,
+    YasnoOutages,
+)
 from storage import db
 
 
@@ -217,26 +223,26 @@ def build_today_message(outages_info: dict) -> str:
     status = outages_info.get("status", "")
     outages = outages_info.get("outages", [])
 
-    if status != "ScheduleApplies":
-        if status == "EmergencyShutdowns":
-            return (
-                f"📅 Розклад на {date_str}\n"
-                f"🚨 {schedule_link('Графік')} не діє. Діють екстрені відключення."
-            )
-        if status == "WaitingForSchedule":
-            return (
-                f"📅 Розклад на {date_str}\n"
-                f"⌛ Очікуємо оновлення"
-            )
+    if status == STATUS_EMERGENCY_SHUTDOWNS:
         return (
             f"📅 Розклад на {date_str}\n"
-            f"⚠️ Статус: {status}"
+            f"🚨 {schedule_link('Графік')} не діє. Діють екстрені відключення."
         )
-
-    if not outages:
+    if status == STATUS_WAITING_FOR_SCHEDULE:
+        return (
+            f"📅 Розклад на {date_str}\n"
+            f"⌛ Очікуємо оновлення"
+        )
+    # NoOutages — опублікований графік без відключень, як ScheduleApplies з порожнім списком.
+    if status == STATUS_NO_OUTAGES or (status == STATUS_SCHEDULE_APPLIES and not outages):
         return (
             f"📅 Розклад на {date_str}\n"
             f"✅ Відключень не передбачено"
+        )
+    if status != STATUS_SCHEDULE_APPLIES:
+        return (
+            f"📅 Розклад на {date_str}\n"
+            f"⚠️ {schedule_link('Графік')} недоступний."
         )
 
     lines = [f"📅 Розклад на {date_str}", ""]
@@ -247,6 +253,15 @@ def build_today_message(outages_info: dict) -> str:
         lines.append(f"{idx}. {start_str} – {end_str} ({duration_label})")
 
     return "\n".join(lines)
+
+def _is_schedule_without_outages(status: str | None, slots_signature: tuple) -> bool:
+    """NoOutages і ScheduleApplies без інтервалів — один графік, сповіщення не потрібне."""
+    if status == STATUS_NO_OUTAGES:
+        return True
+    if status != STATUS_SCHEDULE_APPLIES:
+        return False
+    return not any(slot_type != "NotPlanned" for _start, _end, slot_type in slots_signature)
+
 
 def build_today_signature(outages_info: dict) -> tuple:
     date_value = outages_info.get("date")
@@ -281,7 +296,7 @@ def _load_schedule_bundle() -> tuple[dict, dict]:
 def _extract_plan_segments(*day_infos: dict) -> list[tuple[datetime, datetime]]:
     segments: list[tuple[datetime, datetime]] = []
     for info in day_infos:
-        if not info or info.get("status") not in ["ScheduleApplies", "EmergencyShutdowns"]:
+        if not info or info.get("status") not in [STATUS_SCHEDULE_APPLIES, STATUS_EMERGENCY_SHUTDOWNS]:
             continue
         date_value = info.get("date")
         if not date_value:
@@ -656,43 +671,7 @@ async def cmd_tomorrow(m: Message):
         return
     try:
         outages_info = await asyncio.to_thread(yasno.get_tomorrow_outages)
-        date_str = outages_info["date"].strftime("%d.%m.%Y")
-        status = outages_info["status"]
-        outages = outages_info["outages"]
-        
-        if status != "ScheduleApplies":
-            if status == "EmergencyShutdowns":
-                await m.answer(
-                    f"📅 Розклад на {date_str}\n"
-                    f"🚨 {schedule_link('Графік')} не діє. Діють екстрені відключення."
-                )
-            elif status == "WaitingForSchedule":
-                await m.answer(
-                    f"📅 Розклад на {date_str}\n"
-                    f"⌛ Очікуємо оновлення"
-                )
-            else:
-                await m.answer(
-                    f"📅 Розклад на {date_str}\n"
-                    f"⚠️ Статус: {status}"
-                )
-            return
-        
-        if not outages:
-            await m.answer(
-                f"📅 Розклад на {date_str}\n"
-                f"✅ Відключень не передбачено"
-            )
-            return
-        
-        message = f"📅 Розклад на {date_str}\n\n"
-        for idx, outage in enumerate(outages, 1):
-            start_str = outage["start"].strftime("%H:%M")
-            end_str = outage["end"].strftime("%H:%M")
-            duration_label = format_duration(outage["start"], outage["end"])
-            message += f"{idx}. {start_str} – {end_str} ({duration_label})\n"
-        
-        await m.answer(message)
+        await m.answer(build_today_message(outages_info))
     except Exception as e:
         logging.error("cmd_tomorrow error: %s", e)
         await m.answer(f"❌ Помилка при завантаженні {schedule_link('графіку')}")
@@ -793,9 +772,15 @@ async def schedule_monitor(bot: Bot):
                 last_today_signature = current_signature
                 persist_required = True
             elif current_signature != last_today_signature:
+                old_status, old_slots = last_today_signature or (None, ())
+                same_empty_schedule = (
+                    _is_schedule_without_outages(old_status, old_slots)
+                    and _is_schedule_without_outages(status, slots_signature)
+                )
                 last_today_signature = current_signature
                 persist_required = True
-                message_body = build_today_message(outages_info)
+                if not same_empty_schedule:
+                    message_body = build_today_message(outages_info)
 
             if persist_required:
                 await db.upsert_schedule(today_date, status, outages_info.get("outages"), raw_slots)
@@ -853,7 +838,7 @@ async def schedule_monitor_tomorrow(bot: Bot):
             else:
                 # Порівнюємо статус і вміст слотів, ігноруючи дату
                 old_status, old_slots = last_tomorrow_status
-                if old_status == "WaitingForSchedule" and current_status == "ScheduleApplies":
+                if old_status == STATUS_WAITING_FOR_SCHEDULE and current_status == STATUS_SCHEDULE_APPLIES:
                     # Розклад став доступний
                     last_tomorrow_status = (current_status, slots_signature)
                     persist_required = True

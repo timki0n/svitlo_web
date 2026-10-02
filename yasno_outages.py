@@ -7,9 +7,33 @@ from zoneinfo import ZoneInfo
 
 SCHEDULE_URL = "https://svitlo4u.online"
 
+# Опублікований графік зі слотами відключень.
+STATUS_SCHEDULE_APPLIES = "ScheduleApplies"
+# Опублікований графік без жодного відключення. Те саме, що ScheduleApplies і порожні слоти.
+STATUS_NO_OUTAGES = "NoOutages"
+STATUS_WAITING_FOR_SCHEDULE = "WaitingForSchedule"
+STATUS_EMERGENCY_SHUTDOWNS = "EmergencyShutdowns"
+
+PUBLISHED_SCHEDULE_STATUSES = frozenset({STATUS_SCHEDULE_APPLIES, STATUS_NO_OUTAGES})
+
 
 def schedule_link(label: str) -> str:
     return f'<a href="{SCHEDULE_URL}">{label}</a>'
+
+
+def is_published_schedule(status: str | None) -> bool:
+    """Графік уже відомий: або діють слоти, або відключень явно немає."""
+    return status in PUBLISHED_SCHEDULE_STATUSES
+
+
+def _missing_schedule_message(today_status: str, tomorrow_status: str) -> str:
+    if STATUS_WAITING_FOR_SCHEDULE in (today_status, tomorrow_status):
+        return f"⌛ {schedule_link('Графік')} ще не опубліковано"
+    return f"⚠️ {schedule_link('Графік')} недоступний."
+
+
+def _off_schedule_message() -> str:
+    return f"Відключення поза {schedule_link('графіком')}/можливо аварійні."
 
 
 @dataclass(frozen=True)
@@ -30,8 +54,9 @@ class Slot:
 
 class YasnoOutages:
     """
-    Працюємо з плановими <a href="https://svitlo4u.online">графіками</a> ТІЛЬКИ коли day.status == 'ScheduleApplies'.
-    Все інше (WaitingForSchedule, тощо) — ігноруємо як відсутній <a href="https://svitlo4u.online">графік</a>.
+    Планові інтервали беремо лише коли day.status == 'ScheduleApplies'.
+    'NoOutages' — опублікований графік без відключень (як ScheduleApplies з порожніми слотами).
+    'WaitingForSchedule' та невідомі статуси — графіка ще немає.
     """
 
     def __init__(self, region_id: int, dso_id: int, group_id: str, tz_name: str = "Europe/Kyiv"):
@@ -69,8 +94,9 @@ class YasnoOutages:
 
     def _day_outages(self, day_block: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Якщо статус не 'ScheduleApplies' — повертаємо порожній список відключень,
-        але залишаємо статус як є (щоб можна було показати користувачу).
+        Інтервали відключень є лише за 'ScheduleApplies'.
+        'NoOutages' лишає порожній список: графік є, відключень немає.
+        Інші статуси теж дають порожній список, але статус зберігаємо для тексту користувачу.
         """
         status = day_block.get("status", "")
         date_str = day_block.get("date")
@@ -79,7 +105,7 @@ class YasnoOutages:
         slots = self._parse_slots(day_block)
         outages = []
 
-        if status == "ScheduleApplies":
+        if status == STATUS_SCHEDULE_APPLIES:
             for slot in slots:
                 if slot.is_outage:
                     start_dt, end_dt = slot.as_time_range(day_date, self.tz)
@@ -103,8 +129,8 @@ class YasnoOutages:
     def get_nearest_restore_message(self, now: Optional[dt.datetime] = None,
                                     data_override: Optional[Dict[str, Any]] = None) -> str:
         """
-        Беремо тільки дні з status == 'ScheduleApplies'.
-        Якщо жодного релевантного відрізку не знайдено — "<a href="https://svitlo4u.online">Графік</a> не знайдено."
+        Інтервали беремо лише з 'ScheduleApplies'.
+        'NoOutages' і порожній графік 'ScheduleApplies' — відключення поза графіком.
         """
         now = now.astimezone(self.tz) if now else dt.datetime.now(self.tz)
         data = data_override if data_override else self.fetch()
@@ -112,17 +138,21 @@ class YasnoOutages:
 
         today_block = group.get("today", {})
         tomorrow_block = group.get("tomorrow", {})
+        today_status = today_block.get("status") or ""
+        tomorrow_status = tomorrow_block.get("status") or ""
 
-        if today_block.get("status") == "EmergencyShutdowns":
+        if today_status == STATUS_EMERGENCY_SHUTDOWNS:
             return f"🚨 Діють екстрені відключення. {schedule_link('Графік')} не діє."
+
+        # Сьогодні графік є, але відключень у ньому немає — поточне зникнення світла позапланове.
+        if today_status == STATUS_NO_OUTAGES:
+            return _off_schedule_message()
 
         slots: List[tuple[dt.datetime, dt.datetime]] = []
         past_outages: List[tuple[dt.datetime, dt.datetime]] = []
-        schedule_available = False
 
         # Сьогодні
-        if today_block.get("status") == "ScheduleApplies":
-            schedule_available = True
+        if today_status == STATUS_SCHEDULE_APPLIES:
             today_date = dt.datetime.fromisoformat(today_block.get("date")).date() if today_block.get("date") else now.date()
             for slot in self._parse_slots(today_block):
                 if not slot.is_outage:
@@ -135,8 +165,7 @@ class YasnoOutages:
                     slots.append((start_dt, end_dt))
 
         # Завтра
-        if tomorrow_block.get("status") == "ScheduleApplies":
-            schedule_available = True
+        if tomorrow_status == STATUS_SCHEDULE_APPLIES:
             tomorrow_date = dt.datetime.fromisoformat(tomorrow_block.get("date")).date() if tomorrow_block.get("date") else (now.date() + dt.timedelta(days=1))
             for slot in self._parse_slots(tomorrow_block):
                 if not slot.is_outage:
@@ -150,18 +179,9 @@ class YasnoOutages:
         slots.sort(key=lambda t: t[0])
 
         if not slots and not past_outages:
-            if not schedule_available:
-                status_msgs = []
-                today_status = today_block.get("status")
-                tomorrow_status = tomorrow_block.get("status")
-                if today_status and today_status != "ScheduleApplies":
-                    status_msgs.append(f"сьогодні — {today_status}")
-                if tomorrow_status and tomorrow_status != "ScheduleApplies":
-                    status_msgs.append(f"завтра — {tomorrow_status}")
-                if status_msgs:
-                    return f"{schedule_link('Графік')} недоступний («" + "; ".join(status_msgs) + "»)."
-                return f"{schedule_link('Графік')} недоступний."
-            return f"{schedule_link('Графік')} не знайдено."
+            if today_status == STATUS_SCHEDULE_APPLIES:
+                return _off_schedule_message()
+            return _missing_schedule_message(today_status, tomorrow_status)
 
         # Якщо зараз в межах будь-якого запланованого інтервалу з допуском раннього старту — повертаємо час його завершення
         grace = dt.timedelta(minutes=self.early_start_grace_minutes)
@@ -194,7 +214,7 @@ class YasnoOutages:
                 return f"За {schedule_link('графіком')} світло мало відновитися о {latest_end.strftime('%H:%M')}."
 
         # Інакше ми не в запланованому відключенні — це поза графіком/можливо аварійні
-        return f"Відключення поза {schedule_link('графіком')}/можливо аварійні."
+        return _off_schedule_message()
 
     # ---------- 4) Найближче відключення ----------
     def get_nearest_outage(self, now: Optional[dt.datetime] = None,
@@ -213,7 +233,7 @@ class YasnoOutages:
         candidates: List[dt.datetime] = []
 
         # Сьогодні
-        if today_block.get("status") == "ScheduleApplies":
+        if today_block.get("status") == STATUS_SCHEDULE_APPLIES:
             today_date = dt.datetime.fromisoformat(today_block.get("date")).date() if today_block.get("date") else now.date()
             for slot in self._parse_slots(today_block):
                 if not slot.is_outage:
@@ -227,7 +247,7 @@ class YasnoOutages:
                     return start_dt  # вже триває — це найближчий старт
 
         # Завтра
-        if tomorrow_block.get("status") == "ScheduleApplies":
+        if tomorrow_block.get("status") == STATUS_SCHEDULE_APPLIES:
             tomorrow_date = dt.datetime.fromisoformat(tomorrow_block.get("date")).date() if tomorrow_block.get("date") else (now.date() + dt.timedelta(days=1))
             for slot in self._parse_slots(tomorrow_block):
                 if not slot.is_outage:
@@ -255,17 +275,17 @@ class YasnoOutages:
         today_status = today_block.get("status", "")
         tomorrow_status = tomorrow_block.get("status", "")
 
-        if today_status == "EmergencyShutdowns":
+        if today_status == STATUS_EMERGENCY_SHUTDOWNS:
             return f"🚨 Діють екстрені відключення. {schedule_link('Графік')} не діє."
-        
-        # Якщо обидва дні мають статус, не "ScheduleApplies" — розклад недоступний
-        if today_status != "ScheduleApplies" and tomorrow_status != "ScheduleApplies":
-            if today_status == "WaitingForSchedule" or tomorrow_status == "WaitingForSchedule":
-                return f"⌛ {schedule_link('Графік')} ще не опубліковано"
-            return f"⚠️ {schedule_link('Графік')} недоступний (статус: {today_status})"
+
+        # Сьогодні без опублікованого графіка, і завтра немає слотів — графіка немає.
+        # NoOutages тут опублікований день: далі вийдемо в «відключень не передбачено»,
+        # якщо завтра теж немає інтервалів.
+        if today_status not in PUBLISHED_SCHEDULE_STATUSES and tomorrow_status != STATUS_SCHEDULE_APPLIES:
+            return _missing_schedule_message(today_status, tomorrow_status)
         
         def _future_starts(day_block: Dict[str, Any], fallback_date: dt.date) -> List[dt.datetime]:
-            if day_block.get("status") != "ScheduleApplies":
+            if day_block.get("status") != STATUS_SCHEDULE_APPLIES:
                 return []
             date_val = dt.datetime.fromisoformat(day_block.get("date")).date() if day_block.get("date") else fallback_date
             starts: List[dt.datetime] = []
@@ -279,7 +299,7 @@ class YasnoOutages:
 
         def _past_starts(day_block: Dict[str, Any], fallback_date: dt.date) -> List[dt.datetime]:
             """Збирає минулі старти відключень для перевірки 'мало відбутися'."""
-            if day_block.get("status") != "ScheduleApplies":
+            if day_block.get("status") != STATUS_SCHEDULE_APPLIES:
                 return []
             date_val = dt.datetime.fromisoformat(day_block.get("date")).date() if day_block.get("date") else fallback_date
             starts: List[dt.datetime] = []
@@ -296,9 +316,6 @@ class YasnoOutages:
             _future_starts(today_block, now.date()) +
             _future_starts(tomorrow_block, now.date() + dt.timedelta(days=1))
         )
-
-        if today_block.get("status") == "EmergencyShutdowns":
-            return f"🚨 Діють екстрені відключення. {schedule_link('Графік')} не діє."
 
         # Пріоритет: спочатку показуємо майбутні відключення
         if future_outages:
