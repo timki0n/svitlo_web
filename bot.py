@@ -29,6 +29,7 @@ from yasno_outages import (
     STATUS_SCHEDULE_APPLIES,
     STATUS_WAITING_FOR_SCHEDULE,
     YasnoOutages,
+    is_published_schedule,
 )
 from storage import db
 
@@ -253,6 +254,31 @@ def build_today_message(outages_info: dict) -> str:
         lines.append(f"{idx}. {start_str} – {end_str} ({duration_label})")
 
     return "\n".join(lines)
+
+_UK_MONTHS_SHORT = (
+    "січ.", "лют.", "бер.", "квіт.", "трав.", "черв.",
+    "лип.", "серп.", "вер.", "жовт.", "лист.", "груд.",
+)
+
+
+def format_last_schedule_update(updated_on: str | None) -> str | None:
+    """Час updatedOn з Yasno у київській зоні: 12:55 06 жовт. 2026."""
+    if not updated_on:
+        return None
+    try:
+        moment = datetime.fromisoformat(updated_on)
+    except ValueError:
+        return None
+    local = moment.astimezone(TZ)
+    month = _UK_MONTHS_SHORT[local.month - 1]
+    return f"Останнє оновлення: {local:%H:%M} {local:%d} {month} {local.year}"
+
+
+def with_last_schedule_update(message: str, outages_info: dict) -> str:
+    line = format_last_schedule_update(outages_info.get("updated_on"))
+    if not line:
+        return message
+    return f"{message}\n\n{line}"
 
 def _is_schedule_without_outages(status: str | None, slots_signature: tuple) -> bool:
     """NoOutages і ScheduleApplies без інтервалів — один графік, сповіщення не потрібне."""
@@ -659,7 +685,7 @@ async def cmd_today(m: Message):
         return
     try:
         outages_info = await asyncio.to_thread(yasno.get_today_outages)
-        message = build_today_message(outages_info)
+        message = with_last_schedule_update(build_today_message(outages_info), outages_info)
         await m.answer(message)
     except Exception as e:
         logging.error("cmd_today error: %s", e)
@@ -671,7 +697,7 @@ async def cmd_tomorrow(m: Message):
         return
     try:
         outages_info = await asyncio.to_thread(yasno.get_tomorrow_outages)
-        await m.answer(build_today_message(outages_info))
+        await m.answer(with_last_schedule_update(build_today_message(outages_info), outages_info))
     except Exception as e:
         logging.error("cmd_tomorrow error: %s", e)
         await m.answer(f"❌ Помилка при завантаженні {schedule_link('графіку')}")
@@ -838,8 +864,8 @@ async def schedule_monitor_tomorrow(bot: Bot):
             else:
                 # Порівнюємо статус і вміст слотів, ігноруючи дату
                 old_status, old_slots = last_tomorrow_status
-                if old_status == STATUS_WAITING_FOR_SCHEDULE and current_status == STATUS_SCHEDULE_APPLIES:
-                    # Розклад став доступний
+                if old_status == STATUS_WAITING_FOR_SCHEDULE and is_published_schedule(current_status):
+                    # З'явився графік, зокрема порожній: ScheduleApplies без слотів або NoOutages.
                     last_tomorrow_status = (current_status, slots_signature)
                     persist_required = True
                     message_body = build_today_message(outages_info)

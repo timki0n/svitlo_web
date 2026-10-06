@@ -113,17 +113,22 @@ class YasnoOutages:
 
         return {"date": day_date, "status": status, "outages": outages, "raw_slots": slots}
 
+    def _day_outages_with_update(self, group: Dict[str, Any], day_key: str) -> Dict[str, Any]:
+        info = self._day_outages(group.get(day_key, {}))
+        info["updated_on"] = group.get("updatedOn")
+        return info
+
     # ---------- 1) Сьогодні ----------
     def get_today_outages(self, data_override: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         data = data_override if data_override else self.fetch()
         group = self._extract_group(data)
-        return self._day_outages(group.get("today", {}))
+        return self._day_outages_with_update(group, "today")
 
     # ---------- 2) Завтра ----------
     def get_tomorrow_outages(self, data_override: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         data = data_override if data_override else self.fetch()
         group = self._extract_group(data)
-        return self._day_outages(group.get("tomorrow", {}))
+        return self._day_outages_with_update(group, "tomorrow")
 
     # ---------- 3) Найближче включення ----------
     def get_nearest_restore_message(self, now: Optional[dt.datetime] = None,
